@@ -1,0 +1,199 @@
+{
+  "_comment": "Edit TenantDomain (and anything else you like) before running Setup-TestTenant.ps1",
+  "TenantDomain": "YOURTENANT.onmicrosoft.com",
+  "CompanyName": "Fabrikam Labs",
+
+  "DefaultPassword": "ChangeMe1234!",
+
+  "Secrets": {
+    "DefaultPasswordEnvVar": "ENTRA_LAB_DEFAULT_PASSWORD",
+    "PromptIfMissing": true
+  },
+
+  "BestPractices": {
+    "DefaultMode": "Foundation",
+    "StopOnFailure": true,
+    "WriteTranscriptLogs": true
+  },
+
+  "Users": {
+    "BreakGlassUpn":  "breakglass",
+    "BreakGlassUpn2": "breakglass2",
+    "AdminUpn":       "testadmin",
+    "TestUserCount":  150,
+    "Departments": [
+      "IT Infrastructure",
+      "Cybersecurity",
+      "Software Engineering",
+      "Product Management",
+      "Data and Analytics",
+      "Finance",
+      "Accounting",
+      "Human Resources",
+      "Legal",
+      "Compliance and Risk",
+      "Marketing",
+      "Sales",
+      "Customer Success",
+      "Operations",
+      "Procurement",
+      "Internal Audit",
+      "Research and Development",
+      "Corporate Communications"
+    ],
+    "UsageLocation": "US"
+  },
+
+  "Groups": {
+    "AllEmployees":  "SG-All-Employees",
+    "AdminsTier0":   "SG-Admins-Tier0",
+    "AdminsTier1":   "SG-Admins-Tier1",
+    "AdminsTier2":   "SG-Admins-Tier2",
+    "AllAdmins":     "SG-Admins-All",
+    "Executives":    "SG-Executives",
+    "Engineering":   "SG-Engineering",
+    "Finance":       "SG-Finance",
+    "Cybersecurity": "SG-Cybersecurity",
+    "Dynamic":       "DYN-Cybersecurity-Department",
+    "PAWUsers":      "SG-PAW-Users",
+    "VPNUsers":      "SG-VPN-Users"
+  },
+
+  "CAP": {
+    "State": "enabledForReportingButNotEnforced",
+    "TrustedIPRanges": [
+      { "Name": "HQ - Documentation Range A", "CidrAddress": "203.0.113.0/25",   "IsTrusted": true },
+      { "Name": "Office - Documentation Range B", "CidrAddress": "198.51.100.0/25",  "IsTrusted": true },
+      { "Name": "Office - Documentation Range C", "CidrAddress": "192.0.2.0/25",     "IsTrusted": true },
+      { "Name": "Office - Documentation Range D", "CidrAddress": "203.0.113.128/25", "IsTrusted": true }
+    ]
+  },
+
+  "CABaseline": {
+    "Enabled": true,
+    "SourceRepositoryRawBaseUrl": "https://raw.githubusercontent.com/j0eyv/ConditionalAccessBaseline/main",
+    "PolicyState": "enabledForReportingButNotEnforced",
+    "IncludeServiceAccountPolicies": true,
+    "IncludeGuestPolicies": true,
+    "IncludeAgentPolicies": false,
+    "AllowedCountries": ["US"],
+    "AllowedCountriesServiceAccounts": ["US"]
+  },
+
+  "Apps": {
+    "WebApp": {
+      "Name": "CorpPortal-WebApp",
+      "RedirectUris": [
+        "https://localhost:5001/signin-oidc",
+        "https://jwt.ms"
+      ]
+    },
+    "SPA": {
+      "Name": "CorpPortal-MobileApp",
+      "RedirectUris": [
+        "http://localhost:3000",
+        "https://jwt.ms"
+      ]
+    },
+    "Daemon": {
+      "Name": "CorpOps-AutomationService"
+    }
+  },
+
+  "SchemaExtensions": {
+    "AppName": "Tenant Schema Extension",
+    "Attributes": [
+      {
+        "Name": "employeeType",
+        "DataType": "String",
+        "TargetObjects": ["User"],
+        "AllowedValues": ["C", "P", "F", "SA"],
+        "Description": "Worker classification: C = Contractor, P = Part-time, F = Full-time, SA = Service Account / non-human identity",
+        "SampleAssignment": {
+          "HumanValues": ["C", "P", "F"],
+          "ServiceAccountValue": "SA"
+        }
+      }
+    ]
+  },
+
+  "Auth": {
+    "TAPLifetimeMinutes": 60,
+    "TAPIsUsableOnce": false
+  },
+
+  "Directory": {
+    "AllowEmailVerifiedUsers": false,
+    "AllowInvitesFrom": "adminsAndGuestInviters",
+    "EnableSelfServiceGroupManagement": true
+  },
+
+  "PIM": {
+    "DefaultMaxActivationHours": 8,
+    "GlobalAdminMaxActivationHours": 4,
+    "RequireMFA": true,
+    "RequireJustification": true,
+    "GlobalAdminRequiresApproval": true
+  },
+
+  "Governance": {
+    "GuestReviewIntervalMonths": 1,
+    "PrivilegedRoleReviewIntervalMonths": 3,
+    "AdminGroupReviewIntervalMonths": 6,
+    "ExecutiveGroupReviewIntervalMonths": 12,
+    "LifecycleWorkflowsEnabled": false,
+    "LeaverRetentionDays": 30,
+
+    "EntitlementManagement": {
+      "CatalogName": "Corp Access Packages",
+      "CatalogDescription": "Self-service access packages for internal teams and external vendors.",
+      "ApprovalTimeoutDays": 7,
+      "AccessReviewIntervalMonths": 3,
+      "FallbackApproverJobTitle": "Chief Information Security Officer",
+      "Packages": [
+        {
+          "Name": "ITSM Platform Access",
+          "Description": "Access to the IT service management platform (ServiceNow-style). Grants membership of SG-App-ITSM.",
+          "GroupResource": "SG-App-ITSM",
+          "RequestorGroup": "SG-All-Employees",
+          "RequireApproval": true,
+          "ApproverType": "manager",
+          "AccessDurationDays": 180,
+          "EnableAccessReview": true
+        },
+        {
+          "Name": "CRM Platform Access",
+          "Description": "Access to the customer relationship management platform (Salesforce-style). Grants membership of SG-App-CRM.",
+          "GroupResource": "SG-App-CRM",
+          "RequestorGroup": "SG-All-Employees",
+          "RequireApproval": true,
+          "ApproverType": "manager",
+          "AccessDurationDays": 180,
+          "EnableAccessReview": true
+        },
+        {
+          "Name": "GRC and Audit Tooling",
+          "Description": "Sensitive access to governance, risk and compliance tooling. Approved by the CISO only. Grants membership of SG-App-GRC.",
+          "GroupResource": "SG-App-GRC",
+          "RequestorGroup": "SG-All-Employees",
+          "RequireApproval": true,
+          "ApproverType": "fallbackOnly",
+          "AccessDurationDays": 90,
+          "EnableAccessReview": true
+        }
+      ],
+      "GuestPackage": {
+        "Enabled": true,
+        "Name": "Vendor Collaboration Access",
+        "Description": "Time-limited collaboration access for external vendor accounts. Internal sponsor approval required.",
+        "GroupResource": "SG-App-CRM",
+        "AccessDurationDays": 30,
+        "ConnectedOrganization": {
+          "Enabled": true,
+          "DisplayName": "Fabrikam Partners",
+          "DomainName": "fabrikam.com"
+        }
+      }
+    }
+  }
+}

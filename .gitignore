@@ -1,0 +1,16 @@
+# Local secrets / real tenant config — never commit your working copy
+config/config.local.json
+*.local.json
+
+# Transcript logs (may contain tenant-specific output)
+*.transcript.log
+Logs/
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Claude Code local session settings
+.claude/
