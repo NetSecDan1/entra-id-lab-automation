@@ -35,14 +35,15 @@ Two extra modules for realism and testing:
 
 ## Beyond tenant setup
 
-Four things layered on top of the core tenant-builder:
+Five things layered on top of the core tenant-builder:
 
 | Area | What it is |
 |---|---|
 | **[Custom CA baselines](CAPs/Baselines)** | An alternative to the remote Joey Verlinden import: three locally-authored baselines — `Tiered` (built around this repo's own admin tier groups), `ZeroTrust` (modeled on Microsoft's Zero Trust/SFI guidance), and `SCuBA` (mapped to CISA's M365 baseline MS.AAD.3.x controls). Deploy with `CAPs/Deploy-CAPs-Custom.ps1 -Baseline <name>`. |
 | **[IaC](IaC/terraform)** | Terraform for the Azure-side monitoring backbone: a Log Analytics workspace + tenant-level Entra ID diagnostic export, plus an optional demo of Conditional-Access-as-code via the `azuread` provider. |
-| **[KQL reports](Reports/KQL)** | PowerShell scripts that query the Log Analytics workspace above with KQL and render the results as a single, self-contained, sortable/searchable HTML dashboard — risky sign-ins, legacy auth usage, and Conditional Access outcome insights. The renderer (`Reports/Helpers/HtmlReportFramework.ps1`) has zero dependencies, so it's designed to be copy-pasted into any future one-off script too. |
-| **[IAM automations](IAM)** | Four Graph-native reports needing no Log Analytics workspace: Identity Protection risky users cross-referenced with privileged roles, stale accounts/guest review gaps, app credential expiry, and real Conditional Access coverage-gap analysis (group/role membership actually resolved, not just policy scope on paper). |
+| **[KQL reports](Reports/KQL)** | Nine PowerShell scripts that query the Log Analytics workspace above with KQL and render the results as a single, self-contained, sortable/searchable HTML dashboard. The renderer (`Reports/Helpers/HtmlReportFramework.ps1`) has zero dependencies, so it's designed to be copy-pasted into any future one-off script too. |
+| **[KQL query library](Reports/KQL/Library)** | 36 standalone, documented `.kql` files — password spray, targeted brute force, geodesic impossible travel, MFA fatigue, illicit consent, app credential backdoors, CA policy effectiveness, dormant apps and users, workload identity failures, and the ingestion diagnostics that tell you whether any of it can be trusted. Every file is read-only and pasteable straight into Log Analytics, Sentinel or Defender XDR; `Invoke-KqlLibraryQuery.ps1` lists, parameterizes and renders them without forking the files. |
+| **[IAM automations](IAM)** | Ten Graph-native reports needing no Log Analytics workspace: risky users, stale accounts, app credential expiry, real CA coverage-gap analysis, CA policy health, privileged role usage, PIM activation history, plus application consent risk, MFA registration gaps, and guest access exposure. |
 
 ## Design principles
 
@@ -50,6 +51,28 @@ Four things layered on top of the core tenant-builder:
 - **Safe by default** — Conditional Access policies deploy `enabledForReportingButNotEnforced`. Nothing locks you out of your own tenant.
 - **Break-glass first** — break-glass accounts are created before anything else and excluded from every Conditional Access policy.
 - **One config file** — `config/config.json` drives every module: tenant domain, naming, departments, CA ranges, governance timers, access packages.
+- **Reporting is read-only, and says when it couldn't look** — every report and query only reads. Diagnostic reports connect with `*.Read.All` scopes only, preflight their permissions, and distinguish *checked and clean* from *could not check*. A missing licence, a missing scope or a missing log table is reported as `NotChecked` with the reason, never as a pass. An empty detection result and a missing table look identical from the outside; these reports refuse to let them read the same.
+
+## Diagnostics quick start
+
+Already have a tenant and a workspace? The reporting side stands alone — it reads, it never deploys.
+
+```powershell
+# 1. Can the data be trusted? Missing categories, stale exports, ingestion lag.
+.\Reports\KQL\Get-LogIngestionHealthReport.ps1 -Open
+
+# 2. What's in the query library, and what does one actually do?
+.\Reports\KQL\Invoke-KqlLibraryQuery.ps1 -List
+.\Reports\KQL\Invoke-KqlLibraryQuery.ps1 -Name Threat-MfaMethodAfterRiskySignIn -ShowQuery
+
+# 3. Hunt.
+.\Reports\KQL\Invoke-KqlLibraryQuery.ps1 -Domain ThreatHunting -Days 30 -Open
+
+# 4. State-of-the-tenant gaps, no workspace required.
+.\IAM\Get-AppConsentRiskReport.ps1 -Open
+.\IAM\Get-MfaRegistrationGapReport.ps1 -Open
+.\IAM\Get-GuestAccessReport.ps1 -Open
+```
 
 ## Prerequisites
 
@@ -125,9 +148,15 @@ CAPs/Baselines/                   # Tiered.json, ZeroTrust.json, SCuBA.json
 CAPs/Deploy-CAPs-Custom.ps1
 CAPs/Helpers/CAPolicyEngine.ps1
 IaC/terraform/                    # Log Analytics workspace + Entra diagnostic export
-Reports/KQL/                      # Risky sign-ins, legacy auth, CA insights
-Reports/Helpers/HtmlReportFramework.ps1
-IAM/                              # Risky users, stale accounts, cred expiry, CA gap analysis
+
+Reports/KQL/                      # Nine KQL report scripts
+Reports/KQL/Library/              # 36 standalone .kql queries, by domain
+Reports/KQL/Invoke-KqlLibraryQuery.ps1
+Reports/Helpers/HtmlReportFramework.ps1   # The renderer (zero dependencies)
+Reports/Helpers/KqlQuery.ps1              # Azure connect + query execution with retry
+Reports/Helpers/KqlLibrary.ps1            # Library index / load / parameterize
+Reports/Helpers/GraphReadOnly.ps1         # Read-only Graph + scope preflight + findings
+IAM/                              # Ten Graph-native reports
 ```
 
 ## Disclaimer

@@ -41,11 +41,15 @@ function New-HtmlReport {
     )
 
     # ---- normalize input into named sections -------------------------------
+    # Drop nulls: @($null) is a one-element array containing $null, which would
+    # reach the column-detection line below as $data[0] and blow up. A report
+    # that couldn't collect a section passes $null for it, and that must render
+    # as an empty section rather than killing the whole report.
     $sections = [ordered]@{}
     if ($Rows -is [System.Collections.IDictionary]) {
-        foreach ($key in $Rows.Keys) { $sections[$key] = @($Rows[$key]) }
+        foreach ($key in $Rows.Keys) { $sections[$key] = @($Rows[$key] | Where-Object { $null -ne $_ }) }
     } else {
-        $sections["Results"] = @($Rows)
+        $sections["Results"] = @($Rows | Where-Object { $null -ne $_ })
     }
 
     # ---- column heuristics ---------------------------------------------------
