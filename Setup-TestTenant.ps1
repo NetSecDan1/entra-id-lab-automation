@@ -11,7 +11,7 @@
 
 .PARAMETER Steps
     Comma-separated list of steps to run. Defaults to all.
-    Valid values: Users, Groups, NamedLocations, CAPs, Apps, Schema, Auth, AuthStrengths,
+    Valid values: Users, Groups, NamedLocations, CAPs, CAPsCustom, Apps, Schema, Auth, AuthStrengths,
                   Directory, Licensing, AdminUnits, PIM, AccessReviews, LifecycleWorkflows,
                   EntitlementManagement
 
@@ -35,7 +35,7 @@ param(
     [ValidateSet("Full","Foundation","Security","Identity","Applications","Governance")]
     [string]$Mode = "",
 
-    [ValidateSet("Users","FunUsers","Groups","NamedLocations","CAPs","Apps","Schema","Auth","AuthStrengths",
+    [ValidateSet("Users","FunUsers","Groups","NamedLocations","CAPs","CAPsCustom","Apps","Schema","Auth","AuthStrengths",
                  "Directory","Licensing","AdminUnits","PIM","AccessReviews","LifecycleWorkflows","EntitlementManagement",
                  "TermsOfUse","PasswordProtection","CrossTenantAccess","AuthContexts")]
     [string[]]$Steps = @(),
@@ -100,6 +100,7 @@ $scripts = @{
     Groups             = "$PSScriptRoot\Groups\Deploy-Groups.ps1"
     NamedLocations     = "$PSScriptRoot\NamedLocations\Deploy-NamedLocations.ps1"
     CAPs               = "$PSScriptRoot\CAPs\Deploy-CAPs.ps1"
+    CAPsCustom         = "$PSScriptRoot\CAPs\Deploy-CAPs-Custom.ps1"
     Apps               = "$PSScriptRoot\Apps\Deploy-Apps.ps1"
     Schema             = "$PSScriptRoot\Schema\Deploy-SchemaExtensions.ps1"
     Auth               = "$PSScriptRoot\Auth\Deploy-AuthMethods.ps1"

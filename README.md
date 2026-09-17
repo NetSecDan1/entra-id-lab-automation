@@ -15,7 +15,7 @@ Testing Entra ID features properly needs a tenant that actually looks like an or
 | **Users** | Break-glass accounts (excluded from all CAPs), an admin account, N test users spread across configurable departments, and a blocked/disabled user |
 | **Groups** | Tiered security groups (Tier 0/1/2 admins), a dynamic membership group, and department groups |
 | **Named Locations** | Trusted IP ranges for Conditional Access |
-| **Conditional Access** | Imports the [Joey Verlinden CA baseline](https://github.com/j0eyv/ConditionalAccessBaseline) (~30 policies), deployed report-only by default |
+| **Conditional Access** | Imports the [Joey Verlinden CA baseline](https://github.com/j0eyv/ConditionalAccessBaseline) (~30 policies), deployed report-only by default — or deploy one of three [locally-authored baselines](CAPs/Baselines) instead (see below) |
 | **Applications** | Web app, SPA, and daemon app registrations with sensible redirect URIs |
 | **Schema Extensions** | Custom directory schema extension app + attributes, with optional sample value assignment |
 | **Auth Methods** | Authenticator, FIDO2, Temporary Access Pass, SMS, and SSPR configuration |
@@ -33,6 +33,17 @@ Two extra modules for realism and testing:
 - **Fun Users** — ~24 pop-culture themed test identities, useful for demos
 - **Sign-In Simulation** — scripted sign-in activity to populate logs and reports
 
+## Beyond tenant setup
+
+Four things layered on top of the core tenant-builder:
+
+| Area | What it is |
+|---|---|
+| **[Custom CA baselines](CAPs/Baselines)** | An alternative to the remote Joey Verlinden import: three locally-authored baselines — `Tiered` (built around this repo's own admin tier groups), `ZeroTrust` (modeled on Microsoft's Zero Trust/SFI guidance), and `SCuBA` (mapped to CISA's M365 baseline MS.AAD.3.x controls). Deploy with `CAPs/Deploy-CAPs-Custom.ps1 -Baseline <name>`. |
+| **[IaC](IaC/terraform)** | Terraform for the Azure-side monitoring backbone: a Log Analytics workspace + tenant-level Entra ID diagnostic export, plus an optional demo of Conditional-Access-as-code via the `azuread` provider. |
+| **[KQL reports](Reports/KQL)** | PowerShell scripts that query the Log Analytics workspace above with KQL and render the results as a single, self-contained, sortable/searchable HTML dashboard — risky sign-ins, legacy auth usage, and Conditional Access outcome insights. The renderer (`Reports/Helpers/HtmlReportFramework.ps1`) has zero dependencies, so it's designed to be copy-pasted into any future one-off script too. |
+| **[IAM automations](IAM)** | Four Graph-native reports needing no Log Analytics workspace: Identity Protection risky users cross-referenced with privileged roles, stale accounts/guest review gaps, app credential expiry, and real Conditional Access coverage-gap analysis (group/role membership actually resolved, not just policy scope on paper). |
+
 ## Design principles
 
 - **Idempotent** — every module checks before it creates. Re-run the whole thing, or just one step, after a failure without duplicating objects.
@@ -48,6 +59,8 @@ Two extra modules for realism and testing:
 - **A disposable/test tenant.** This is a lab tool — do not point it at a production directory.
 - If Security Defaults is enabled on the tenant, disable it before enabling Conditional Access policies
 - Some Governance modules (PIM, Access Reviews, Entitlement Management, Lifecycle Workflows) require an Entra ID P2 / Governance license on the tenant
+- Optional, only if you're using the KQL reports: `Az.Accounts` + `Az.OperationalInsights` PowerShell modules, and a Log Analytics workspace (see [`IaC/terraform`](IaC/terraform))
+- Optional, only if you're using the Terraform IaC: Terraform >= 1.7 and an Azure subscription
 
 ## Quick start
 
@@ -107,6 +120,14 @@ Security/Deploy-CrossTenantAccess.ps1
 Security/Deploy-AuthContexts.ps1
 Reports/Get-TenantReport.ps1      # Summarize what's deployed
 Simulation/Invoke-SignInSimulation.ps1
+
+CAPs/Baselines/                   # Tiered.json, ZeroTrust.json, SCuBA.json
+CAPs/Deploy-CAPs-Custom.ps1
+CAPs/Helpers/CAPolicyEngine.ps1
+IaC/terraform/                    # Log Analytics workspace + Entra diagnostic export
+Reports/KQL/                      # Risky sign-ins, legacy auth, CA insights
+Reports/Helpers/HtmlReportFramework.ps1
+IAM/                              # Risky users, stale accounts, cred expiry, CA gap analysis
 ```
 
 ## Disclaimer

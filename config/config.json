@@ -69,6 +69,13 @@
     ]
   },
 
+  "CAPCustomBaseline": {
+    "_comment": "Deploy-CAPs-Custom.ps1 — an alternative to the remote Joey Verlinden import in CABaseline below. Choose one baseline: Tiered, ZeroTrust, or SCuBA (see CAPs/Baselines/*.json).",
+    "Enabled": true,
+    "Baseline": "Tiered",
+    "State": "enabledForReportingButNotEnforced"
+  },
+
   "CABaseline": {
     "Enabled": true,
     "SourceRepositoryRawBaseUrl": "https://raw.githubusercontent.com/j0eyv/ConditionalAccessBaseline/main",
@@ -195,5 +202,10 @@
         }
       }
     }
+  },
+
+  "Reporting": {
+    "_comment": "Log Analytics workspace for Reports/KQL/*.ps1 — provision one with IaC/terraform, or point at an existing workspace receiving Entra ID Sign-in/Audit logs.",
+    "LogAnalyticsWorkspaceId": ""
   }
 }

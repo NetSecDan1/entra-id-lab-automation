@@ -1,0 +1,117 @@
+{
+  "name": "ZeroTrust",
+  "description": "Modeled on Microsoft's own published Zero Trust / Secure Future Initiative Conditional Access guidance: verify explicitly, use least privilege, and assume breach.",
+  "policies": [
+    {
+      "displayName": "ZT-001-Block-LegacyAuthentication",
+      "description": "Verify explicitly: legacy auth protocols can't carry MFA signal, so they're blocked outright.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeUsers": ["All"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["All"] },
+        "clientAppTypes": ["exchangeActiveSync", "other"]
+      },
+      "grantControls": { "operator": "OR", "builtInControls": ["block"] }
+    },
+    {
+      "displayName": "ZT-002-AllUsers-Require-MFA",
+      "description": "Verify explicitly: every identity proves itself with strong MFA before access is granted.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeUsers": ["All"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["All"] }
+      },
+      "grantControls": { "operator": "OR", "authenticationStrength": "{{AuthStrength:Corporate Standard MFA}}" }
+    },
+    {
+      "displayName": "ZT-003-AllApps-Require-ManagedDevice",
+      "description": "Least privilege / device trust: cloud apps are only reachable from a compliant or hybrid Entra-joined device.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeUsers": ["All"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["All"] }
+      },
+      "grantControls": { "operator": "OR", "builtInControls": ["compliantDevice", "domainJoinedDevice"] }
+    },
+    {
+      "displayName": "ZT-004-AzureManagement-Require-MFA",
+      "description": "Least privilege: the Azure management plane (portal, CLI, PowerShell, ARM) always requires MFA, independent of any resource-level RBAC.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeUsers": ["All"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["797f4846-ba00-4fd7-ba43-dac1f8f63013"] }
+      },
+      "grantControls": { "operator": "OR", "authenticationStrength": "{{AuthStrength:Corporate Standard MFA}}" }
+    },
+    {
+      "displayName": "ZT-005-UserRisk-High-RequireMfaAndPasswordChange",
+      "description": "Assume breach: a user Entra scores as high risk must MFA and change their password before continuing. Requires Entra ID P2.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeUsers": ["All"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["All"] },
+        "userRiskLevels": ["high"]
+      },
+      "grantControls": { "operator": "AND", "builtInControls": ["mfa", "passwordChange"] }
+    },
+    {
+      "displayName": "ZT-006-SignInRisk-High-Block",
+      "description": "Assume breach: a sign-in Entra scores as high risk is blocked outright rather than challenged.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeUsers": ["All"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["All"] },
+        "signInRiskLevels": ["high"]
+      },
+      "grantControls": { "operator": "OR", "builtInControls": ["block"] }
+    },
+    {
+      "displayName": "ZT-007-Block-UnmanagedLinuxPlatform",
+      "description": "Least privilege: Linux isn't a managed platform in this environment, so access from it is blocked rather than silently allowed unmanaged.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeUsers": ["All"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["All"] },
+        "platforms": { "includePlatforms": ["linux"] }
+      },
+      "grantControls": { "operator": "OR", "builtInControls": ["block"] }
+    },
+    {
+      "displayName": "ZT-008-AllApps-ContinuousVerification-SigninFrequency",
+      "description": "Assume breach: sessions are re-verified every 12 hours instead of trusted indefinitely once established.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeUsers": ["All"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["All"] }
+      },
+      "grantControls": { "operator": "OR", "builtInControls": ["mfa"] },
+      "sessionControls": {
+        "signInFrequency": { "isEnabled": true, "type": "hours", "value": 12, "authenticationType": "primaryAndSecondaryAuthentication" }
+      }
+    }
+  ]
+}

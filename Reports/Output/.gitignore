@@ -1,0 +1,4 @@
+# Generated reports contain live tenant data (usernames, IPs, sign-in activity).
+# Never commit them.
+*.html
+!.gitignore

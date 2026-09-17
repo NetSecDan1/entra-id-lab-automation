@@ -1,0 +1,128 @@
+{
+  "name": "Tiered",
+  "description": "Custom-authored baseline built around this lab's own tiered admin model (SG-Admins-Tier0/1/2, SG-PAW-Users, SG-VPN-Users, SG-Executives). Not a mirror of any external baseline.",
+  "policies": [
+    {
+      "displayName": "TIER-000-Global-Block-LegacyAuthentication",
+      "description": "Legacy/basic auth protocols cannot do MFA — block them tenant-wide.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeUsers": ["All"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["All"] },
+        "clientAppTypes": ["exchangeActiveSync", "other"]
+      },
+      "grantControls": { "operator": "OR", "builtInControls": ["block"] }
+    },
+    {
+      "displayName": "TIER-001-AllEmployees-Require-MFA",
+      "description": "Baseline MFA coverage for every employee, using the Corporate Standard MFA authentication strength.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeUsers": ["All"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["All"] }
+      },
+      "grantControls": { "operator": "OR", "authenticationStrength": "{{AuthStrength:Corporate Standard MFA}}" }
+    },
+    {
+      "displayName": "TIER-002-Tier0-Require-PhishingResistantMFA",
+      "description": "Tier 0 admins (and anyone holding a privileged directory role) must use phishing-resistant MFA — no exceptions.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeGroups": ["{{Group:AdminsTier0}}"],
+          "includeRoles": ["{{Role:AllPrivilegedRoles}}"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["All"] }
+      },
+      "grantControls": { "operator": "OR", "authenticationStrength": "{{AuthStrength:Phishing-Resistant MFA}}" }
+    },
+    {
+      "displayName": "TIER-003-Tier1Tier2-Require-MFA",
+      "description": "Tier 1/2 admins require at least Corporate Standard MFA (below Tier 0's phishing-resistant bar, above baseline employee MFA in scope of admin portals).",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeGroups": ["{{Group:AdminsTier1}}", "{{Group:AdminsTier2}}"]
+        },
+        "applications": { "includeApplications": ["All"] }
+      },
+      "grantControls": { "operator": "OR", "authenticationStrength": "{{AuthStrength:Corporate Standard MFA}}" }
+    },
+    {
+      "displayName": "TIER-004-AllAdmins-Require-CompliantDevice",
+      "description": "Every tier of admin must authenticate from a compliant or hybrid Entra-joined device — no BYOD admin access.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": { "includeGroups": ["{{Group:AllAdmins}}"] },
+        "applications": { "includeApplications": ["All"] }
+      },
+      "grantControls": { "operator": "OR", "builtInControls": ["compliantDevice", "domainJoinedDevice"] }
+    },
+    {
+      "displayName": "TIER-005-Tier0Tier1-SigninFrequency-NoPersistentBrowser",
+      "description": "Tighter session lifetime for the highest-privilege tiers: reauth every 4 hours, never persist the browser session.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": { "includeGroups": ["{{Group:AdminsTier0}}", "{{Group:AdminsTier1}}"] },
+        "applications": { "includeApplications": ["All"] }
+      },
+      "grantControls": { "operator": "OR", "builtInControls": ["mfa"] },
+      "sessionControls": {
+        "signInFrequency": { "isEnabled": true, "type": "hours", "value": 4, "authenticationType": "primaryAndSecondaryAuthentication" },
+        "persistentBrowser": { "isEnabled": true, "mode": "never" }
+      }
+    },
+    {
+      "displayName": "TIER-006-VPNUsers-Require-MFA-OffTrustedNetwork",
+      "description": "VPN-eligible users must MFA whenever they connect from outside the trusted office networks.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": { "includeGroups": ["{{Group:VPNUsers}}"] },
+        "applications": { "includeApplications": ["All"] },
+        "locations": { "includeLocations": ["All"], "excludeLocations": ["{{NamedLocation:Trusted Office Networks}}"] }
+      },
+      "grantControls": { "operator": "OR", "builtInControls": ["mfa"] }
+    },
+    {
+      "displayName": "TIER-007-Executives-Require-PhishingResistantMFA-And-CompliantDevice",
+      "description": "Executives are high-value targets: require both phishing-resistant MFA and a compliant device, not just one.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": { "includeGroups": ["{{Group:Executives}}"] },
+        "applications": { "includeApplications": ["All"] }
+      },
+      "grantControls": { "operator": "AND", "builtInControls": ["compliantDevice"], "authenticationStrength": "{{AuthStrength:Phishing-Resistant MFA}}" }
+    },
+    {
+      "displayName": "TIER-008-PAWUsers-Require-HardwareTokenOnly",
+      "description": "Privileged Access Workstation users may only authenticate with hardware-backed methods — no phone-based MFA at all.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": { "includeGroups": ["{{Group:PAWUsers}}"] },
+        "applications": { "includeApplications": ["All"] }
+      },
+      "grantControls": { "operator": "OR", "authenticationStrength": "{{AuthStrength:Hardware Token Only}}" }
+    },
+    {
+      "displayName": "TIER-009-Global-Block-HighRiskSignIn",
+      "description": "Identity Protection: block sign-ins Entra scores as high risk, tenant-wide. Requires Entra ID P2 — skipped gracefully if unlicensed.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeUsers": ["All"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["All"] },
+        "signInRiskLevels": ["high"]
+      },
+      "grantControls": { "operator": "OR", "builtInControls": ["block"] }
+    }
+  ]
+}

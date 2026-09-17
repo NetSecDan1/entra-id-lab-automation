@@ -1,0 +1,11 @@
+# Copy to terraform.tfvars and fill in — terraform.tfvars is gitignored.
+
+subscription_id = "00000000-0000-0000-0000-000000000000"
+tenant_id       = "00000000-0000-0000-0000-000000000000"
+
+location             = "eastus"
+resource_group_name  = "rg-entra-lab-monitoring"
+workspace_name       = "law-entra-lab"
+log_retention_days   = 30
+
+enable_demo_terraform_ca_policy = false

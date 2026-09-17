@@ -1,0 +1,90 @@
+{
+  "name": "SCuBA",
+  "description": "Modeled on CISA's M365 Secure Configuration Baseline (SCuBA) for Entra ID — policies map to the MS.AAD.3.x control numbers noted in each description. Not a certified/validated SCuBA implementation, just built to the same intent.",
+  "policies": [
+    {
+      "displayName": "SCUBA-MS.AAD.3.1-Block-LegacyAuthentication",
+      "description": "MS.AAD.3.1 — legacy authentication protocols SHALL be blocked.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeUsers": ["All"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["All"] },
+        "clientAppTypes": ["exchangeActiveSync", "other"]
+      },
+      "grantControls": { "operator": "OR", "builtInControls": ["block"] }
+    },
+    {
+      "displayName": "SCUBA-MS.AAD.3.2-Block-HighRiskUsers",
+      "description": "MS.AAD.3.2 — users detected as high risk SHALL be blocked. Requires Entra ID P2.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeUsers": ["All"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["All"] },
+        "userRiskLevels": ["high"]
+      },
+      "grantControls": { "operator": "OR", "builtInControls": ["block"] }
+    },
+    {
+      "displayName": "SCUBA-MS.AAD.3.4-Block-HighRiskSignIns",
+      "description": "MS.AAD.3.4 — sign-ins detected as high risk SHALL be blocked. Requires Entra ID P2.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeUsers": ["All"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["All"] },
+        "signInRiskLevels": ["high"]
+      },
+      "grantControls": { "operator": "OR", "builtInControls": ["block"] }
+    },
+    {
+      "displayName": "SCUBA-MS.AAD.3.5-Require-PhishingResistantMFA",
+      "description": "MS.AAD.3.5 — phishing-resistant MFA SHALL be required for all users.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeUsers": ["All"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["All"] }
+      },
+      "grantControls": { "operator": "OR", "authenticationStrength": "{{AuthStrength:Phishing-Resistant MFA}}" }
+    },
+    {
+      "displayName": "SCUBA-MS.AAD.3.7-Require-ManagedDevice",
+      "description": "MS.AAD.3.7 — managed (compliant or hybrid Entra-joined) devices SHOULD be required for authentication.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeUsers": ["All"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["All"] }
+      },
+      "grantControls": { "operator": "OR", "builtInControls": ["compliantDevice", "domainJoinedDevice"] }
+    },
+    {
+      "displayName": "SCUBA-MS.AAD.3.8-PrivilegedRoles-Require-ReAuth",
+      "description": "MS.AAD.3.8 — re-authentication SHALL be required periodically for privileged roles.",
+      "state": "{{DesiredState}}",
+      "conditions": {
+        "users": {
+          "includeRoles": ["{{Role:AllPrivilegedRoles}}"],
+          "excludeUsers": ["{{User:BreakGlassUpn}}", "{{User:BreakGlassUpn2}}"]
+        },
+        "applications": { "includeApplications": ["All"] }
+      },
+      "grantControls": { "operator": "OR", "builtInControls": ["mfa"] },
+      "sessionControls": {
+        "signInFrequency": { "isEnabled": true, "type": "hours", "value": 1, "authenticationType": "primaryAndSecondaryAuthentication" }
+      }
+    }
+  ]
+}

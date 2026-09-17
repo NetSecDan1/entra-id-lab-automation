@@ -230,7 +230,8 @@ function Connect-TestTenant {
             "Application.ReadWrite.All","AppRoleAssignment.ReadWrite.All",
             "Directory.ReadWrite.All","Organization.ReadWrite.All",
             "RoleManagement.ReadWrite.Directory","UserAuthenticationMethod.ReadWrite.All",
-            "EntitlementManagement.ReadWrite.All"
+            "EntitlementManagement.ReadWrite.All","AuditLog.Read.All",
+            "IdentityRiskyUser.Read.All","IdentityRiskEvent.Read.All"
         )
         Connect-MgGraph -Scopes $scopes -NoWelcome -UseDeviceAuthentication
     }
