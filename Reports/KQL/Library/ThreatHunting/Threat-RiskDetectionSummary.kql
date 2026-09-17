@@ -1,0 +1,48 @@
+// =============================================================================
+// Name:       Identity Protection risk detections and what got through
+// Domain:     Threat hunting
+// Tables:     SigninLogs
+// Severity:   high
+// Safety:     READ-ONLY.
+// Purpose:    Groups Entra Identity Protection's own detections by type and shows, for each,
+//             how many of the flagged sign-ins SUCCEEDED anyway. A detection that fires but
+//             does not stop anything is just telemetry.
+// Tuning:     lookback - window. Extend to 30d for a trend view; risk detections are sparse.
+// Reading it: The Successful column is the point of this query. A high count against
+//             anonymizedIPAddress, maliciousIPAddress or unfamiliarFeatures means you have the
+//             detection but no risk-based Conditional Access policy acting on it.
+//             RiskState = atRisk with RiskDetail = none means nothing has remediated it.
+// Caveat:     Requires Entra ID P2 for most detection types. On P1 only a small subset of
+//             detections populate, so a thin result here may be a licensing artifact - confirm
+//             with Log-IngestionHealth.kql.
+// Next step:  IAM/Get-RiskyUsersReport.ps1 pulls the live risky-user state from Graph.
+// =============================================================================
+let lookback = 14d;
+SigninLogs
+| where TimeGenerated > ago(lookback)
+| where array_length(todynamic(RiskEventTypes_V2)) > 0
+       or RiskLevelDuringSignIn in ("medium", "high")
+       or RiskLevelAggregated in ("medium", "high")
+| mv-expand RiskType = todynamic(RiskEventTypes_V2) to typeof(string)
+| extend RiskType = iff(isempty(RiskType), "(risk level set, no detection type)", RiskType),
+         Country  = tostring(LocationDetails.countryOrRegion)
+| summarize Events            = count(),
+            Successful        = countif(ResultType == "0"),
+            BlockedByCA       = countif(ResultType == "53003"),
+            HighRisk          = countif(RiskLevelDuringSignIn == "high"),
+            DistinctUsers     = dcount(UserPrincipalName),
+            Users             = make_set(UserPrincipalName, 20),
+            IPs               = make_set(IPAddress, 15),
+            Countries         = make_set(Country, 10),
+            Apps              = make_set(AppDisplayName, 10),
+            SingleFactor      = countif(AuthenticationRequirement == "singleFactorAuthentication"),
+            FirstSeen         = min(TimeGenerated),
+            LastSeen          = max(TimeGenerated)
+        by RiskType, RiskState, RiskDetail
+| extend Severity = case(Successful > 0 and HighRisk > 0, "CRITICAL - high-risk sign-in succeeded",
+                         Successful > 0,                  "High - risky sign-in succeeded",
+                                                          "Medium - detected and stopped"),
+         SeverityRank = case(Successful > 0 and HighRisk > 0, 0, Successful > 0, 1, 2)
+| project RiskType, RiskState, RiskDetail, Severity, SeverityRank, Events, Successful, BlockedByCA,
+          HighRisk, SingleFactor, DistinctUsers, Users, IPs, Countries, Apps, FirstSeen, LastSeen
+| order by SeverityRank asc, Successful desc, Events desc

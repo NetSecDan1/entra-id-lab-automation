@@ -1,0 +1,59 @@
+// =============================================================================
+// Name:       Privileged users signing in without strong auth
+// Domain:     Sign-in posture
+// Tables:     SigninLogs, AuditLogs
+// Severity:   critical
+// Safety:     READ-ONLY.
+// Purpose:    Same idea as the single-factor query, narrowed to accounts that hold a
+//             privileged directory role. An admin authenticating with a password alone is the
+//             highest-value finding this library produces.
+// Tuning:     roleLookback - how far back to mine AuditLogs for role assignments. privilegedRoles
+//             - edit to match the roles your org treats as Tier 0. lookback - sign-in window.
+// Reading it: Any row is actionable. Roles shows which privileged role(s) the account picked up
+//             inside roleLookback.
+// Caveat:     IMPORTANT - role membership is reconstructed from audit events, so this only sees
+//             users whose role was ASSIGNED within roleLookback and still inside your workspace
+//             retention. Long-standing admins assigned years ago will be missed here. Treat this
+//             as a fast triage query and use IAM/Get-PrivilegedRoleUsageReport.ps1 (which reads
+//             live membership from Graph) for the authoritative list.
+// =============================================================================
+let lookback = 7d;
+let roleLookback = 180d;
+let privilegedRoles = dynamic([
+    "Global Administrator", "Privileged Role Administrator", "Privileged Authentication Administrator",
+    "Security Administrator", "Conditional Access Administrator", "User Administrator",
+    "Application Administrator", "Cloud Application Administrator", "Authentication Administrator",
+    "Exchange Administrator", "SharePoint Administrator", "Intune Administrator",
+    "Helpdesk Administrator", "Billing Administrator", "Hybrid Identity Administrator"
+]);
+let privilegedUsers = AuditLogs
+    | where TimeGenerated > ago(roleLookback)
+    | where OperationName has "member to role"
+    | where ResultType =~ "success"
+    | mv-expand Target = TargetResources
+    | extend TargetUpn = tostring(Target.userPrincipalName)
+    | mv-expand Prop = Target.modifiedProperties
+    | where tostring(Prop.displayName) == "Role.DisplayName"
+    | extend RoleName = trim('"', tostring(Prop.newValue))
+    | where RoleName in (privilegedRoles)
+    | where isnotempty(TargetUpn)
+    | summarize Roles = make_set(RoleName, 10) by UserPrincipalName = tolower(TargetUpn);
+SigninLogs
+| where TimeGenerated > ago(lookback)
+| where ResultType == "0"
+| where AuthenticationRequirement == "singleFactorAuthentication"
+| extend UserPrincipalName = tolower(UserPrincipalName)
+| join kind = inner privilegedUsers on UserPrincipalName
+| extend Country = tostring(LocationDetails.countryOrRegion),
+         IsCompliant = tobool(DeviceDetail.isCompliant)
+| summarize SingleFactorSignIns = count(),
+            Roles                = take_any(Roles),
+            Apps                 = make_set(AppDisplayName, 10),
+            IPs                  = make_set(IPAddress, 10),
+            Countries            = make_set(Country, 5),
+            ClientApps           = make_set(ClientAppUsed, 5),
+            CompliantDevice      = countif(IsCompliant == true),
+            FirstSeen            = min(TimeGenerated),
+            LastSeen             = max(TimeGenerated)
+        by UserPrincipalName
+| order by SingleFactorSignIns desc

@@ -1,0 +1,42 @@
+// =============================================================================
+// Name:       Successful single-factor sign-ins
+// Domain:     Sign-in posture
+// Tables:     SigninLogs
+// Severity:   high
+// Safety:     READ-ONLY.
+// Purpose:    The single most useful MFA gap query. Every row is a user who got into a
+//             resource with one factor - password only - and nothing stopped them. This is
+//             what a password-spray success looks like from the defender's side.
+// Tuning:     lookback - window. Add a `| where UserType != "Guest"` line to exclude B2B if
+//             guests are governed by the partner tenant's policies instead.
+// Reading it: Sort by UnmanagedSingleFactor - single-factor sign-ins that did NOT come from a
+//             compliant device. Those have no compensating control at all. Single-factor from
+//             a compliant Intune device is a defensible design choice; single-factor from an
+//             unmanaged device over the internet is not.
+// Next step:  Cross-check with IAM/Get-ConditionalAccessGapReport.ps1 to see which CA policy
+//             should have covered these users and why it did not fire.
+// =============================================================================
+let lookback = 7d;
+SigninLogs
+| where TimeGenerated > ago(lookback)
+| where ResultType == "0"
+| where AuthenticationRequirement == "singleFactorAuthentication"
+| extend Country     = tostring(LocationDetails.countryOrRegion),
+         IsCompliant = tobool(DeviceDetail.isCompliant),
+         IsManaged   = tobool(DeviceDetail.isManaged),
+         TrustType   = tostring(DeviceDetail.trustType)
+| summarize SingleFactorSignIns      = count(),
+            DistinctApps             = dcount(AppDisplayName),
+            Apps                     = make_set(AppDisplayName, 10),
+            ClientApps               = make_set(ClientAppUsed, 8),
+            Countries                = make_set(Country, 8),
+            CompliantDeviceSignIns   = countif(IsCompliant == true),
+            InteractiveSignIns       = countif(IsInteractive == true),
+            FirstSeen                = min(TimeGenerated),
+            LastSeen                 = max(TimeGenerated)
+        by UserPrincipalName, UserType
+| extend UnmanagedSingleFactor = SingleFactorSignIns - CompliantDeviceSignIns
+| extend Severity = case(UnmanagedSingleFactor > 50, "High",
+                         UnmanagedSingleFactor > 0,  "Medium",
+                                                     "Low")
+| order by UnmanagedSingleFactor desc, SingleFactorSignIns desc

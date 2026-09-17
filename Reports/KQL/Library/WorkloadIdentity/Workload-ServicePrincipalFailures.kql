@@ -1,0 +1,60 @@
+// =============================================================================
+// Name:       Service principal sign-in failures, diagnosed
+// Domain:     Workload identity
+// Tables:     AADServicePrincipalSignInLogs
+// Severity:   high
+// Safety:     READ-ONLY.
+// Purpose:    When an integration breaks at 3am, this is the query that tells you why in one
+//             pass. Groups app-only (daemon) sign-in failures per service principal and maps
+//             the error codes to a concrete diagnosis - expired secret, wrong secret, missing
+//             app, blocked by Conditional Access.
+// Tuning:     lookback - window. Widen for an intermittent failure; narrow to isolate an
+//             outage you already know the timing of.
+// Reading it: Diagnosis is the answer column.
+//             7000222 - the secret EXPIRED. Cross-check against
+//                       IAM/Get-AppCredentialExpiryReport.ps1, which would have warned you.
+//             7000215 - the secret is WRONG: rotated on one side only, or a stale value in a
+//                       key vault / pipeline variable.
+//             700016  - the app is not in this tenant: wrong tenant ID, or the registration
+//                       was deleted.
+//             53003   - a Conditional Access policy for workload identities is blocking it.
+//             A FailureRatePct of 100 is a hard outage; anything between means intermittent -
+//             look at the IPs column for a single unhealthy caller.
+// =============================================================================
+let lookback = 7d;
+AADServicePrincipalSignInLogs
+| where TimeGenerated > ago(lookback)
+| extend Code = tostring(ResultType)
+| summarize Attempts     = count(),
+            Failures     = countif(Code != "0"),
+            Successes    = countif(Code == "0"),
+            ErrorCodes   = make_set_if(Code, Code != "0", 10),
+            SampleError  = take_anyif(ResultDescription, Code != "0"),
+            Resources    = make_set(ResourceDisplayName, 10),
+            IPs          = make_set(IPAddress, 10),
+            Countries    = make_set(tostring(LocationDetails.countryOrRegion), 5),
+            FirstFailure = minif(TimeGenerated, Code != "0"),
+            LastFailure  = maxif(TimeGenerated, Code != "0"),
+            LastSuccess  = maxif(TimeGenerated, Code == "0")
+        by ServicePrincipalName, ServicePrincipalId, AppId
+| where Failures > 0
+| extend FailureRatePct = round(100.0 * Failures / Attempts, 1)
+| extend CodeText = tostring(ErrorCodes)
+| extend Diagnosis = case(
+        CodeText has "7000222", "Client secret EXPIRED - rotate the credential on the app registration",
+        CodeText has "7000215", "Invalid client secret - the caller is using a wrong or stale value",
+        CodeText has "700016",  "Application not found in this tenant - wrong tenant, or the registration was deleted",
+        CodeText has "500011",  "Resource principal not found - the target API has no service principal in this tenant",
+        CodeText has "53003",   "Blocked by Conditional Access (workload identity policy)",
+        CodeText has "700027",  "Client assertion failed signature validation - certificate mismatch",
+        CodeText has "700082",  "Refresh token expired due to inactivity",
+        CodeText has "90025",   "Request throttled by the identity platform - add backoff",
+                                "Unmapped - read SampleError and look up the code in ErrorCodes")
+| extend Severity = case(Successes == 0,        "CRITICAL - total outage for this workload",
+                         FailureRatePct >= 50,  "High - majority of attempts failing",
+                                                "Medium - intermittent failures"),
+         SeverityRank = case(Successes == 0, 0, FailureRatePct >= 50, 1, 2)
+| project ServicePrincipalName, AppId, ServicePrincipalId, Severity, SeverityRank, Diagnosis,
+          FailureRatePct, Failures, Successes, Attempts, ErrorCodes, SampleError,
+          Resources, IPs, Countries, FirstFailure, LastFailure, LastSuccess
+| order by SeverityRank asc, Failures desc

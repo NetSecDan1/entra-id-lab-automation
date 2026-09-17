@@ -1,0 +1,43 @@
+// =============================================================================
+// Name:       Authentication method and password changes per user
+// Domain:     Identity administration
+// Tables:     AuditLogs
+// Severity:   medium
+// Safety:     READ-ONLY.
+// Purpose:    Who changed whose security info. Self-service registration is routine; an admin
+//             resetting another user's MFA method is a helpdesk social-engineering vector and
+//             should be a small, well-known set of actors.
+// Tuning:     lookback - window. Add `| where SelfService == false` to see only
+//             administrator-performed changes, which is usually the interesting subset.
+// Reading it: SelfService = false rows are the ones to review. Then ask: is this actor a known
+//             helpdesk operator? Is the volume normal for them? A new actor performing many
+//             resets in a short window is the signature of a compromised helpdesk account.
+// Next step:  For attack correlation rather than review, use
+//             ThreatHunting/Threat-MfaMethodAfterRiskySignIn.kql instead - it joins these same
+//             events to preceding risky sign-ins.
+// =============================================================================
+let lookback = 30d;
+AuditLogs
+| where TimeGenerated > ago(lookback)
+| where OperationName has_any ("security info", "Strong Authentication", "authentication method",
+                               "Reset user password", "Change user password", "Update user password")
+| extend Actor     = coalesce(tostring(InitiatedBy.user.userPrincipalName), tostring(InitiatedBy.app.displayName)),
+         ActorType = iff(isnotempty(tostring(InitiatedBy.app.displayName)), "Application", "User"),
+         ActorIp   = tostring(InitiatedBy.user.ipAddress)
+| mv-expand Target = TargetResources
+| extend TargetUser = coalesce(tostring(Target.userPrincipalName), tostring(Target.displayName))
+| where isnotempty(TargetUser)
+| extend SelfService = tolower(Actor) == tolower(TargetUser)
+| summarize Events      = count(),
+            Successes   = countif(ResultType =~ "success"),
+            Failures    = countif(ResultType !~ "success"),
+            Operations  = make_set(OperationName, 10),
+            Details     = make_set(tostring(ResultReason), 5),
+            ActorIps    = make_set(ActorIp, 5),
+            FirstSeen   = min(TimeGenerated),
+            LastSeen    = max(TimeGenerated)
+        by TargetUser, Actor, ActorType, SelfService
+| extend Severity = case(SelfService == false and ActorType == "Application", "Medium - automated change by an application",
+                         SelfService == false,                                "Medium - administrator changed another user",
+                                                                              "Low - self-service")
+| order by SelfService asc, Events desc, LastSeen desc

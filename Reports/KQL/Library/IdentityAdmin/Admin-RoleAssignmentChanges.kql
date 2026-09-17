@@ -1,0 +1,50 @@
+// =============================================================================
+// Name:       Directory role assignment changes
+// Domain:     Identity administration
+// Tables:     AuditLogs
+// Severity:   high
+// Safety:     READ-ONLY.
+// Purpose:    The audit trail for privilege itself: who granted or removed which directory
+//             role, to whom, from where. Covers both permanent assignments and PIM-eligible
+//             assignments, and flags Tier 0 roles separately.
+// Tuning:     lookback - window. tier0Roles - the roles whose assignment is always a notable
+//             event in your org; edit to match your tiering model.
+// Reading it: IsTier0 = true rows are the ones to reconcile against change records every time.
+//             An assignment made by an Application actor rather than a User is worth a second
+//             look - that is automation, and it should be automation you recognise.
+//             TargetType = ServicePrincipal means a workload identity was given a directory
+//             role, which is easy to miss in the portal and hard to revoke later.
+// Next step:  IAM/Get-PrivilegedRoleUsageReport.ps1 shows the resulting current state,
+//             including standing vs PIM-eligible split and dormant privileged accounts.
+// =============================================================================
+let lookback = 30d;
+let tier0Roles = dynamic([
+    "Global Administrator", "Privileged Role Administrator", "Privileged Authentication Administrator",
+    "Partner Tier2 Support", "Application Administrator", "Cloud Application Administrator",
+    "Hybrid Identity Administrator", "Domain Name Administrator"
+]);
+AuditLogs
+| where TimeGenerated > ago(lookback)
+| where OperationName has_any ("member to role", "member from role", "role assignment",
+                               "role definition", "role in PIM", "Activate role")
+| extend Actor     = coalesce(tostring(InitiatedBy.user.userPrincipalName), tostring(InitiatedBy.app.displayName)),
+         ActorType = iff(isnotempty(tostring(InitiatedBy.app.displayName)), "Application", "User"),
+         ActorIp   = tostring(InitiatedBy.user.ipAddress)
+| mv-expand Target = TargetResources
+| extend TargetName = coalesce(tostring(Target.userPrincipalName), tostring(Target.displayName)),
+         TargetType = tostring(Target.type),
+         TargetId   = tostring(Target.id)
+| mv-expand Prop = Target.modifiedProperties
+| where tostring(Prop.displayName) == "Role.DisplayName"
+| extend NewRole = trim('"', tostring(Prop.newValue)),
+         OldRole = trim('"', tostring(Prop.oldValue))
+| extend RoleName = iff(isnotempty(NewRole), NewRole, OldRole)
+| where isnotempty(RoleName)
+| extend IsTier0    = RoleName in (tier0Roles),
+         ChangeKind = case(OperationName has "eligible",       "PIM eligible assignment",
+                           OperationName has "member from",    "Removal",
+                           OperationName has "Activate",       "PIM activation",
+                                                               "Permanent assignment")
+| project TimeGenerated, ChangeKind, RoleName, IsTier0, TargetName, TargetType, TargetId,
+          Actor, ActorType, ActorIp, OperationName, Result = tostring(ResultType), CorrelationId
+| order by IsTier0 desc, TimeGenerated desc

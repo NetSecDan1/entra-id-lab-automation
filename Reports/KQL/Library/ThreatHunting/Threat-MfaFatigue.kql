@@ -1,0 +1,47 @@
+// =============================================================================
+// Name:       MFA fatigue / push bombing
+// Domain:     Threat hunting
+// Tables:     SigninLogs
+// Severity:   critical
+// Safety:     READ-ONLY.
+// Purpose:    An attacker with a valid password repeatedly triggers MFA prompts until the user
+//             approves one out of irritation. The signature is a burst of denied MFA attempts
+//             for one account followed by a success.
+// Tuning:     minDenials - denials in a bucket before the row is emitted. 3 is deliberately
+//             sensitive because the successful approval is what matters, not the volume.
+//             bucket - time window.
+// Reading it: SuccessAfterDenials = true is the finding. It means the prompts were denied
+//             several times and then one was approved - that approval is very likely the
+//             attacker's session, not the user's. Note the IPs: if the successful sign-in came
+//             from a different IP than the denied ones, treat it as confirmed.
+// Next step:  Revoking sessions is the usual response, but that is a change - confirm the
+//             finding here first, then act through your normal incident process.
+// =============================================================================
+let lookback = 7d;
+let bucket = 1h;
+let minDenials = 3;
+SigninLogs
+| where TimeGenerated > ago(lookback)
+| where ResultType in ("500121", "0")
+| extend Outcome = iff(ResultType == "0", "Success", "MfaDenied")
+| summarize Denials          = countif(Outcome == "MfaDenied"),
+            Successes        = countif(Outcome == "Success"),
+            FirstDenial      = minif(TimeGenerated, Outcome == "MfaDenied"),
+            LastDenial       = maxif(TimeGenerated, Outcome == "MfaDenied"),
+            FirstSuccess     = minif(TimeGenerated, Outcome == "Success"),
+            DenialReasons    = make_set_if(ResultDescription, Outcome == "MfaDenied", 5),
+            DenialIPs        = make_set_if(IPAddress, Outcome == "MfaDenied", 10),
+            SuccessIPs       = make_set_if(IPAddress, Outcome == "Success", 10),
+            Countries        = make_set(tostring(LocationDetails.countryOrRegion), 5),
+            Apps             = make_set(AppDisplayName, 5)
+        by UserPrincipalName, Window = bin(TimeGenerated, bucket)
+| where Denials >= minDenials
+| extend SuccessAfterDenials = Successes > 0 and isnotnull(FirstSuccess) and FirstSuccess > FirstDenial
+| extend DifferentSourceIP   = SuccessAfterDenials and tostring(SuccessIPs) != tostring(DenialIPs)
+| extend Severity = case(SuccessAfterDenials and DifferentSourceIP, "CRITICAL - approved from a different IP",
+                         SuccessAfterDenials,                       "CRITICAL - approved after repeated denials",
+                                                                    "High - repeated denials, not yet approved"),
+         SeverityRank = case(SuccessAfterDenials and DifferentSourceIP, 0, SuccessAfterDenials, 1, 2)
+| project Window, UserPrincipalName, Severity, SeverityRank, Denials, Successes, SuccessAfterDenials,
+          DifferentSourceIP, FirstDenial, LastDenial, FirstSuccess, DenialReasons, DenialIPs, SuccessIPs, Countries, Apps
+| order by SeverityRank asc, Window desc, Denials desc

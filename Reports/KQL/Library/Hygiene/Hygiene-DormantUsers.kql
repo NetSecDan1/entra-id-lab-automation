@@ -1,0 +1,45 @@
+// =============================================================================
+// Name:       Dormant and never-successful user accounts
+// Domain:     Hygiene
+// Tables:     SigninLogs, AADNonInteractiveUserSignInLogs
+// Severity:   medium
+// Safety:     READ-ONLY.
+// Purpose:    Accounts that still exist and are still enabled, but have not successfully signed
+//             in for a long time - or have only ever failed. Dormant accounts are attractive
+//             targets precisely because nobody notices activity on them.
+// Tuning:     lookback - observation window; make it as long as retention allows.
+//             dormantThreshold - inactivity that qualifies as dormant. 30d is aggressive, 90d
+//             is the common access-review cadence.
+// Reading it: Two distinct populations here.
+//             LastSuccessful is null - the account has attempted but NEVER succeeded in the
+//             window. Often a leaver whose account was disabled, or a service account with a
+//             broken credential.
+//             LastSuccessful is old - genuinely dormant. Check UserType: dormant Guests are the
+//             single largest category in most tenants and the easiest to clean up.
+// Caveat:     Same blind spot as the dormant-apps query: an account with no rows at all does
+//             not appear here. IAM/Get-StaleAccountsReport.ps1 reads signInActivity from Graph
+//             and does catch those.
+// =============================================================================
+let lookback = 90d;
+let dormantThreshold = 30d;
+union isfuzzy = true
+    (SigninLogs
+        | where TimeGenerated > ago(lookback)
+        | project TimeGenerated, UserPrincipalName, UserType, ResultType, AppDisplayName, IPAddress),
+    (AADNonInteractiveUserSignInLogs
+        | where TimeGenerated > ago(lookback)
+        | project TimeGenerated, UserPrincipalName, UserType, ResultType, AppDisplayName, IPAddress)
+| where isnotempty(UserPrincipalName)
+| summarize Attempts       = count(),
+            Successful     = countif(tostring(ResultType) == "0"),
+            LastAttempt    = max(TimeGenerated),
+            LastSuccessful = maxif(TimeGenerated, tostring(ResultType) == "0"),
+            Apps           = make_set(AppDisplayName, 8),
+            IPs            = make_set(IPAddress, 5)
+        by UserPrincipalName = tolower(UserPrincipalName), UserType
+| where isnull(LastSuccessful) or LastSuccessful < ago(dormantThreshold)
+| extend DaysSinceLastSuccess = iff(isnull(LastSuccessful),
+                                    real(null),
+                                    round(datetime_diff('minute', now(), LastSuccessful) / 1440.0, 1))
+| extend Category = iff(isnull(LastSuccessful), "Never successful in window", "Dormant")
+| order by Category asc, DaysSinceLastSuccess desc

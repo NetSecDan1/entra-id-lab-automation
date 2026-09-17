@@ -1,0 +1,42 @@
+// =============================================================================
+// Name:       Conditional Access and security policy changes
+// Domain:     Identity administration
+// Tables:     AuditLogs
+// Severity:   high
+// Safety:     READ-ONLY.
+// Purpose:    A CA policy weakened at 2am is indistinguishable from a CA policy weakened during
+//             a change window unless you have the diff. This is the field-level change history
+//             for Conditional Access policies, named locations, authentication strengths and
+//             authentication method policies.
+// Tuning:     lookback - 90d gives a useful quarter-over-quarter view. valueTruncation - CA
+//             policy bodies are large JSON blobs; values are truncated so the table stays
+//             readable. Raise it when you need the full diff for one specific change.
+// Reading it: Read OldValue -> NewValue as a diff. The changes that matter most:
+//             state moving to "disabled" or "enabledForReportingButNotEnforced"; users or
+//             groups appearing in an exclusion list; grant controls being removed; a named
+//             location flipping to trusted.
+// Next step:  IAM/Get-CAPolicyHealthReport.ps1 audits the resulting policy set as a whole.
+// =============================================================================
+let lookback = 90d;
+let valueTruncation = 400;
+AuditLogs
+| where TimeGenerated > ago(lookback)
+| where OperationName has_any ("conditional access policy", "named location", "authentication strength",
+                               "Authentication Method Policy", "authentication method policy",
+                               "cross-tenant access setting", "Terms of use")
+| extend Actor     = coalesce(tostring(InitiatedBy.user.userPrincipalName), tostring(InitiatedBy.app.displayName)),
+         ActorType = iff(isnotempty(tostring(InitiatedBy.app.displayName)), "Application", "User"),
+         ActorIp   = tostring(InitiatedBy.user.ipAddress)
+| mv-expand Target = TargetResources
+| extend PolicyName = tostring(Target.displayName), PolicyId = tostring(Target.id)
+| mv-expand Prop = Target.modifiedProperties
+| extend PropName = tostring(Prop.displayName),
+         OldValue = substring(trim('"', tostring(Prop.oldValue)), 0, valueTruncation),
+         NewValue = substring(trim('"', tostring(Prop.newValue)), 0, valueTruncation)
+| where isnotempty(PropName) and OldValue != NewValue
+| extend ChangeKind = case(OperationName has "Add",    "Created",
+                           OperationName has "Delete", "Deleted",
+                                                       "Modified")
+| project TimeGenerated, ChangeKind, OperationName, PolicyName, PolicyId, PropName,
+          OldValue, NewValue, Actor, ActorType, ActorIp, Result = tostring(ResultType), CorrelationId
+| order by TimeGenerated desc

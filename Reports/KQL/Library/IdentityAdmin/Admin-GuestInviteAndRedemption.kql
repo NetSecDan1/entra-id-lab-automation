@@ -1,0 +1,48 @@
+// =============================================================================
+// Name:       Guest invitations and redemptions by external domain
+// Domain:     Identity administration
+// Tables:     AuditLogs
+// Severity:   medium
+// Safety:     READ-ONLY.
+// Purpose:    B2B collaboration expands your identity perimeter into other tenants. Grouping
+//             invitations by the guest's own domain shows which organisations actually have
+//             access, who invited them, and how much of the guest population came from a single
+//             invitation spree.
+// Tuning:     lookback - 90d matches a typical access review cycle. If your directory settings
+//             allow any member to invite, expect a long tail of inviters - that itself is the
+//             finding.
+// Reading it: Unrecognised domains are the headline, especially consumer mail domains
+//             (gmail.com, outlook.com) which usually indicate ad-hoc collaboration outside any
+//             partner agreement. A single Inviter responsible for most of the guest population
+//             is worth confirming against a business process.
+// Caveat:     The external domain is parsed out of the B2B UPN form
+//             (user_contoso.com#EXT#@yourtenant.onmicrosoft.com). Guests created by other means
+//             may not parse and will show an empty domain.
+// Next step:  IAM/Get-GuestAccessReport.ps1 shows the live guest population including group and
+//             role exposure, and guests invited before this window.
+// =============================================================================
+let lookback = 90d;
+AuditLogs
+| where TimeGenerated > ago(lookback)
+| where OperationName has_any ("Invite external user", "Redeem external user invite",
+                               "Bulk invite users", "Add user sponsor", "Update external user")
+| extend Actor   = coalesce(tostring(InitiatedBy.user.userPrincipalName), tostring(InitiatedBy.app.displayName)),
+         ActorIp = tostring(InitiatedBy.user.ipAddress)
+| mv-expand Target = TargetResources
+| extend GuestUpn  = tostring(Target.userPrincipalName),
+         GuestName = tostring(Target.displayName)
+| where isnotempty(GuestUpn)
+| extend ExternalDomain = tolower(extract(@"_([^_@#]+\.[^_@#]+)#EXT#", 1, GuestUpn))
+| extend ExternalDomain = iff(isempty(ExternalDomain), "(unparsed)", ExternalDomain)
+| summarize GuestCount   = dcount(GuestUpn),
+            Events       = count(),
+            Invites      = countif(OperationName has "Invite"),
+            Redemptions  = countif(OperationName has "Redeem"),
+            Guests       = make_set(GuestUpn, 25),
+            Inviters     = make_set(Actor, 10),
+            InviterIps   = make_set(ActorIp, 5),
+            FirstSeen    = min(TimeGenerated),
+            LastSeen     = max(TimeGenerated)
+        by ExternalDomain
+| extend RedemptionRatePct = round(100.0 * Redemptions / iff(Invites == 0, 1, Invites), 1)
+| order by GuestCount desc

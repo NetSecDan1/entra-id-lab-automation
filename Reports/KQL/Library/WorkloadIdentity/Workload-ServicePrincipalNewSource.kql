@@ -1,0 +1,41 @@
+// =============================================================================
+// Name:       Service principal authenticating from a new source IP
+// Domain:     Workload identity
+// Tables:     AADServicePrincipalSignInLogs
+// Severity:   critical
+// Safety:     READ-ONLY.
+// Purpose:    Workload identities are boringly predictable - the same daemon calls from the
+//             same handful of egress addresses every day. A successful app-only sign-in from an
+//             address that service principal has never used before is one of the clearest
+//             credential-theft signals available, because the credential is a bearer secret
+//             with no MFA behind it.
+// Tuning:     baselineWindow - history that defines "normal" for each workload. Longer is
+//             better; must at least cover your deployment cadence. detectionWindow - the period
+//             being judged.
+// Reading it: Any row deserves an explanation. Legitimate causes exist - a new deployment
+//             region, a scale-out, a migrated runner, a changed NAT gateway - so confirm
+//             against recent infrastructure changes. If none fits, treat the secret as
+//             compromised and check Threat-AppCredentialBackdoor.kql for a credential added
+//             around the same time.
+// Caveat:     First-party Microsoft service principals and managed identities move between
+//             Microsoft-owned addresses routinely and will generate noise. Focus on your own
+//             app registrations.
+// =============================================================================
+let baselineWindow = 30d;
+let detectionWindow = 1d;
+let baseline = AADServicePrincipalSignInLogs
+    | where TimeGenerated between (ago(baselineWindow) .. ago(detectionWindow))
+    | where tostring(ResultType) == "0"
+    | summarize by ServicePrincipalId, IPAddress;
+AADServicePrincipalSignInLogs
+| where TimeGenerated > ago(detectionWindow)
+| where tostring(ResultType) == "0"
+| join kind = leftanti baseline on ServicePrincipalId, IPAddress
+| summarize SignIns   = count(),
+            Resources = make_set(ResourceDisplayName, 10),
+            Countries = make_set(tostring(LocationDetails.countryOrRegion), 5),
+            Cities    = make_set(tostring(LocationDetails.city), 5),
+            FirstSeen = min(TimeGenerated),
+            LastSeen  = max(TimeGenerated)
+        by ServicePrincipalName, ServicePrincipalId, AppId, IPAddress
+| order by FirstSeen desc

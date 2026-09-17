@@ -1,0 +1,79 @@
+// =============================================================================
+// Name:       Sign-in error taxonomy
+// Domain:     Sign-in posture
+// Tables:     SigninLogs
+// Severity:   info
+// Safety:     READ-ONLY.
+// Purpose:    Every failing AADSTS code in the window, decoded into plain English and grouped
+//             into a class, so you can tell a user-experience problem (expired password,
+//             interrupt) from a policy block from an attack. This is the first query to run
+//             when someone says "users are getting errors".
+// Tuning:     lookback - window. Extend errorCatalog with codes specific to your environment;
+//             anything unmatched still appears, tagged Unclassified.
+// Reading it: Work top-down by Failures. High DistinctUsers with low DistinctIPs points at a
+//             config/policy change; low DistinctUsers with high DistinctIPs points at an attack
+//             against one account; high on both with code 50126 is a spray - pivot to
+//             Threat-PasswordSpray.kql.
+// Caveat:     ResultType is a string column - compare it as a string ("0", not 0).
+// =============================================================================
+let lookback = 7d;
+let errorCatalog = datatable(Code: string, Meaning: string, Class: string)
+[
+    "50034",   "User account does not exist in the directory",                         "Enumeration",
+    "50053",   "Account locked by smart lockout, or too many failed attempts",         "Attack indicator",
+    "50055",   "Password expired",                                                     "User lifecycle",
+    "50056",   "Invalid or null password - no password configured for the user",       "User lifecycle",
+    "50057",   "User account is disabled",                                             "User lifecycle",
+    "50058",   "Silent sign-in failed - session info insufficient",                    "Benign interrupt",
+    "50072",   "User must enroll in second-factor authentication",                     "MFA enrollment",
+    "50074",   "Strong authentication required but not satisfied",                     "MFA",
+    "50076",   "MFA required by Conditional Access - re-auth needed",                  "Conditional Access",
+    "50079",   "User must enroll MFA (proof-up interrupt)",                            "MFA enrollment",
+    "50097",   "Device authentication required",                                       "Device",
+    "50105",   "User is not assigned to a role for this application",                  "App assignment",
+    "50126",   "Invalid username or password",                                         "Attack indicator",
+    "50131",   "Conditional Access failure - device or client state",                  "Conditional Access",
+    "50133",   "Session invalid - password expired or recently changed",               "Benign interrupt",
+    "50140",   "Keep-me-signed-in interrupt",                                          "Benign interrupt",
+    "50144",   "On-premises Active Directory password expired",                        "Hybrid",
+    "50158",   "External security challenge not satisfied",                            "MFA",
+    "50173",   "Fresh authentication token required",                                  "Benign interrupt",
+    "51004",   "User account does not exist in the directory",                         "Enumeration",
+    "53000",   "Device is not compliant",                                              "Device",
+    "53001",   "Device is not domain joined",                                          "Device",
+    "53002",   "Application used is not an approved application",                      "Device",
+    "53003",   "Access blocked by Conditional Access policy",                          "Conditional Access",
+    "53004",   "User must enroll in MFA to satisfy Conditional Access",                "MFA enrollment",
+    "65001",   "User or administrator has not consented to the application",           "Consent",
+    "70008",   "Expired or revoked refresh token",                                     "Token lifecycle",
+    "80001",   "Pass-through auth agent could not connect to Active Directory",        "Hybrid",
+    "80002",   "Pass-through auth password validation request timed out",              "Hybrid",
+    "80005",   "Pass-through auth agent unexpected error",                             "Hybrid",
+    "80014",   "Pass-through auth validation exceeded maximum elapsed time",           "Hybrid",
+    "81010",   "Seamless SSO - token expired or invalid",                              "Hybrid",
+    "90094",   "Admin consent required for the application",                           "Consent",
+    "500011",  "Resource principal not found in the tenant",                           "App configuration",
+    "500121",  "Authentication failed during strong authentication request",           "MFA",
+    "530003",  "Device does not meet compliance requirements",                         "Device",
+    "700016",  "Application not found in the directory",                               "App configuration",
+    "7000215", "Invalid client secret provided",                                       "Workload credential",
+    "7000222", "Client secret has expired",                                            "Workload credential"
+];
+SigninLogs
+| where TimeGenerated > ago(lookback)
+| where ResultType != "0"
+| summarize Failures          = count(),
+            DistinctUsers     = dcount(UserPrincipalName),
+            DistinctIPs       = dcount(IPAddress),
+            DistinctApps      = dcount(AppDisplayName),
+            TopApps           = make_set(AppDisplayName, 5),
+            SampleUsers       = make_set(UserPrincipalName, 5),
+            SampleDescription = take_any(ResultDescription),
+            FirstSeen         = min(TimeGenerated),
+            LastSeen          = max(TimeGenerated)
+        by Code = tostring(ResultType)
+| join kind = leftouter errorCatalog on Code
+| extend Meaning = iff(isempty(Meaning), strcat("Not in catalog - look up AADSTS", Code), Meaning),
+         Class   = iff(isempty(Class), "Unclassified", Class)
+| project Code, Meaning, Class, Failures, DistinctUsers, DistinctIPs, DistinctApps, TopApps, SampleUsers, SampleDescription, FirstSeen, LastSeen
+| order by Failures desc

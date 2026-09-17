@@ -1,0 +1,42 @@
+// =============================================================================
+// Name:       Dormant applications (cleanup candidates)
+// Domain:     Hygiene
+// Tables:     SigninLogs, AADNonInteractiveUserSignInLogs, AADServicePrincipalSignInLogs
+// Severity:   medium
+// Safety:     READ-ONLY.
+// Purpose:    Every application registration and service principal that still exists but has
+//             stopped being used. Each one is standing attack surface: it holds consented
+//             permissions and possibly a valid secret, while nobody is watching it because
+//             nothing depends on it any more.
+// Tuning:     lookback - the observation window. dormantThreshold - how long without a sign-in
+//             before an app counts as dormant. Keep lookback comfortably larger than
+//             dormantThreshold or the result is meaningless.
+// Reading it: Sort by DaysSinceLastSignIn. Before removing anything, confirm the app is not
+//             seasonal (quarter-end, annual audit tooling) - a 30d window will call those
+//             dormant every time.
+// Caveat:     IMPORTANT - an application with ZERO sign-ins across the entire lookback does not
+//             appear in this result at all, because it has no rows to aggregate. Those are the
+//             most dormant apps of all. To find them you must compare against the live app
+//             inventory from Graph: IAM/Get-AppConsentRiskReport.ps1 does exactly that.
+// =============================================================================
+let lookback = 30d;
+let dormantThreshold = 7d;
+union isfuzzy = true
+    (SigninLogs
+        | where TimeGenerated > ago(lookback)
+        | project TimeGenerated, AppId, AppName = AppDisplayName, Kind = "Interactive user"),
+    (AADNonInteractiveUserSignInLogs
+        | where TimeGenerated > ago(lookback)
+        | project TimeGenerated, AppId, AppName = AppDisplayName, Kind = "Non-interactive user"),
+    (AADServicePrincipalSignInLogs
+        | where TimeGenerated > ago(lookback)
+        | project TimeGenerated, AppId, AppName = ServicePrincipalName, Kind = "App-only")
+| where isnotempty(AppId)
+| summarize TotalSignIns = count(),
+            SignInKinds  = make_set(Kind, 3),
+            FirstSeen    = min(TimeGenerated),
+            LastSeen     = max(TimeGenerated)
+        by AppId, AppName
+| extend DaysSinceLastSignIn = round(datetime_diff('minute', now(), LastSeen) / 1440.0, 1)
+| where LastSeen < ago(dormantThreshold)
+| order by DaysSinceLastSignIn desc

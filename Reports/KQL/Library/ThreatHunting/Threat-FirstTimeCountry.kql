@@ -1,0 +1,47 @@
+// =============================================================================
+// Name:       First sign-in from a country the user has never used
+// Domain:     Threat hunting
+// Tables:     SigninLogs
+// Severity:   medium
+// Safety:     READ-ONLY.
+// Purpose:    A per-user geographic baseline built from history, then a leftanti join to find
+//             today's sign-ins from somewhere genuinely new for that specific user. Far lower
+//             noise than a tenant-wide "unusual country" list, because it is personalised.
+// Tuning:     baselineWindow - how much history defines "normal" for a user. Must be long enough
+//             to include their travel patterns; 30d is a minimum, 90d is better if retention
+//             allows. detectionWindow - the recent period being judged.
+// Reading it: A new country alone is weak evidence - people travel. It becomes strong when
+//             combined with: a new UserAgent, a sign-in that bypassed MFA, or a hosting-provider
+//             IP. Check those columns before escalating.
+// Caveat:     A user whose entire history is inside baselineWindow will produce noise on their
+//             first few days. Suppress recently created accounts if that is a problem.
+// =============================================================================
+let baselineWindow = 30d;
+let detectionWindow = 1d;
+let baseline = SigninLogs
+    | where TimeGenerated between (ago(baselineWindow) .. ago(detectionWindow))
+    | where ResultType == "0"
+    | summarize by UserPrincipalName = tolower(UserPrincipalName), Country = tostring(LocationDetails.countryOrRegion);
+SigninLogs
+| where TimeGenerated > ago(detectionWindow)
+| where ResultType == "0"
+| extend UserPrincipalName = tolower(UserPrincipalName),
+         Country           = tostring(LocationDetails.countryOrRegion)
+| where isnotempty(Country)
+| join kind = leftanti baseline on UserPrincipalName, Country
+| summarize SignIns          = count(),
+            IPs              = make_set(IPAddress, 10),
+            Cities           = make_set(tostring(LocationDetails.city), 10),
+            Apps             = make_set(AppDisplayName, 10),
+            UserAgents       = make_set(UserAgent, 5),
+            SingleFactor     = countif(AuthenticationRequirement == "singleFactorAuthentication"),
+            NoCAApplied      = countif(ConditionalAccessStatus =~ "notApplied"),
+            RiskySignIns     = countif(RiskLevelDuringSignIn in ("medium", "high")),
+            FirstSeen        = min(TimeGenerated),
+            LastSeen         = max(TimeGenerated)
+        by UserPrincipalName, Country
+| extend Severity = case(RiskySignIns > 0,                   "High - new country with risk detection",
+                         SingleFactor > 0 or NoCAApplied > 0, "Medium - new country, weak controls",
+                                                              "Low - new country, controls held"),
+         SeverityRank = case(RiskySignIns > 0, 0, SingleFactor > 0 or NoCAApplied > 0, 1, 2)
+| order by SeverityRank asc, FirstSeen desc

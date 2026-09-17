@@ -1,0 +1,30 @@
+// =============================================================================
+// Name:       Log blind-spot hours
+// Domain:     Diagnostics
+// Tables:     SigninLogs
+// Severity:   medium
+// Safety:     READ-ONLY.
+// Purpose:    Finds hours in the window where ZERO sign-in rows landed. In a tenant with
+//             any real user population that means the diagnostic export stalled - and every
+//             detection query silently reported "nothing found" for that period.
+// Tuning:     lookback - how far back to check. bucket - granularity of a "gap".
+// Reading it: Contiguous runs of missing hours = an export outage; note the start and end and
+//             correlate with Log-IngestionLatency. Scattered single overnight hours in a small
+//             lab are usually just genuine inactivity, not an outage.
+// Caveat:     A lab tenant with no users signing in overnight will show false gaps. Compare the
+//             pattern against a known-busy week before raising it. For a tenant that should
+//             never be quiet, ANY row here is a finding.
+// =============================================================================
+let lookback = 14d;
+let bucket = 1h;
+let observed = SigninLogs
+    | where TimeGenerated > ago(lookback)
+    | summarize Rows = count() by Bucket = bin(TimeGenerated, bucket);
+range Bucket from bin(ago(lookback), bucket) to bin(now(), bucket) step bucket
+| join kind = leftouter observed on Bucket
+| extend Rows = iff(isnull(Rows), 0L, Rows)
+| where Rows == 0
+| extend HourOfDayUtc = datetime_part("hour", Bucket),
+         DayOfWeekUtc = dayofweek(Bucket)
+| project Bucket, HourOfDayUtc, DayOfWeekUtc, Rows
+| order by Bucket desc

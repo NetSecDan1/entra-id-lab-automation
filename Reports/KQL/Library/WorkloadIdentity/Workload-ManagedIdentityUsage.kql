@@ -1,0 +1,34 @@
+// =============================================================================
+// Name:       Managed identity usage and failures
+// Domain:     Workload identity
+// Tables:     AADManagedIdentitySignInLogs
+// Severity:   info
+// Safety:     READ-ONLY.
+// Purpose:    Managed identities are the preferred alternative to secrets, so knowing which
+//             ones are live, what they reach, and where they fail is both an inventory exercise
+//             and a troubleshooting one. A managed identity with no recent sign-ins is a
+//             cleanup candidate; one failing consistently is a broken role assignment.
+// Tuning:     lookback - window.
+// Reading it: Failures on a managed identity are almost never credential problems (there is no
+//             credential) - they are authorization problems. The usual cause is a missing RBAC
+//             role assignment on the target resource, or the identity being referenced after
+//             the resource that owned it was deleted.
+// Caveat:     This table only populates if the ManagedIdentitySignInLogs diagnostic category is
+//             enabled. An empty result usually means the category is off, not that no managed
+//             identities are in use - confirm with Diagnostics/Log-IngestionHealth.kql.
+// =============================================================================
+let lookback = 7d;
+AADManagedIdentitySignInLogs
+| where TimeGenerated > ago(lookback)
+| extend Code = tostring(ResultType)
+| summarize SignIns      = count(),
+            Failures     = countif(Code != "0"),
+            Successes    = countif(Code == "0"),
+            Resources    = make_set(ResourceDisplayName, 10),
+            ErrorCodes   = make_set_if(Code, Code != "0", 8),
+            SampleError  = take_anyif(ResultDescription, Code != "0"),
+            FirstSeen    = min(TimeGenerated),
+            LastSeen     = max(TimeGenerated)
+        by ServicePrincipalName, ServicePrincipalId
+| extend FailureRatePct = round(100.0 * Failures / SignIns, 1)
+| order by Failures desc, SignIns desc

@@ -1,0 +1,61 @@
+// =============================================================================
+// Name:       MFA method registered shortly after a risky sign-in
+// Domain:     Threat hunting
+// Tables:     SigninLogs, AuditLogs
+// Severity:   critical
+// Safety:     READ-ONLY.
+// Purpose:    The highest-signal correlation in this whole library. After compromising a
+//             password, the attacker's very next move is to register their OWN MFA method so
+//             they keep access after the password is reset. This joins successful risky
+//             sign-ins to security-info changes that followed within a short window.
+// Tuning:     correlationWindow - how long after the risky sign-in a change still counts as
+//             related. 24h is generous; 1-2h is higher confidence, lower recall.
+//             lookback - overall hunting window.
+// Reading it: Any row deserves investigation. MinutesAfterRiskySignIn in single digits is
+//             near-conclusive. SameIp = true means the security-info change came from the same
+//             address as the risky sign-in - that is the attacker, not the user.
+// Caveat:     Requires Identity Protection risk data (P2) in SigninLogs. Without it, the risky
+//             side of the join is empty and this query returns nothing - which is NOT a clean
+//             result. Confirm P2 coverage with Log-IngestionHealth.kql first.
+// =============================================================================
+let lookback = 14d;
+let correlationWindow = 24h;
+let riskySignIns = SigninLogs
+    | where TimeGenerated > ago(lookback)
+    | where ResultType == "0"
+    | where RiskLevelDuringSignIn in ("medium", "high") or RiskLevelAggregated in ("medium", "high")
+    | project RiskyTime   = TimeGenerated,
+              UserPrincipalName = tolower(UserPrincipalName),
+              RiskIP      = IPAddress,
+              RiskLevel   = RiskLevelDuringSignIn,
+              RiskCountry = tostring(LocationDetails.countryOrRegion),
+              RiskApp     = AppDisplayName,
+              RiskAgent   = UserAgent;
+let securityInfoChanges = AuditLogs
+    | where TimeGenerated > ago(lookback)
+    | where OperationName has_any ("security info", "Strong Authentication", "authentication method",
+                                   "Reset user password", "Change user password")
+    | where ResultType =~ "success"
+    | mv-expand Target = TargetResources
+    | extend ChangedUser = tolower(coalesce(tostring(Target.userPrincipalName), tostring(Target.displayName)))
+    | where isnotempty(ChangedUser)
+    | project ChangeTime  = TimeGenerated,
+              UserPrincipalName = ChangedUser,
+              ChangeOperation = OperationName,
+              ChangeDetail = tostring(ResultReason),
+              ChangeActor  = coalesce(tostring(InitiatedBy.user.userPrincipalName), tostring(InitiatedBy.app.displayName)),
+              ChangeIp     = tostring(InitiatedBy.user.ipAddress);
+riskySignIns
+| join kind = inner securityInfoChanges on UserPrincipalName
+| where ChangeTime between (RiskyTime .. (RiskyTime + correlationWindow))
+| extend MinutesAfterRiskySignIn = datetime_diff('minute', ChangeTime, RiskyTime),
+         SameIp                  = isnotempty(ChangeIp) and ChangeIp == RiskIP,
+         SelfService             = tolower(ChangeActor) == UserPrincipalName
+| extend Severity = case(SameIp,                          "CRITICAL - change from the same IP as the risky sign-in",
+                         MinutesAfterRiskySignIn <= 60,   "CRITICAL - change within an hour of a risky sign-in",
+                                                          "High - change followed a risky sign-in"),
+         SeverityRank = case(SameIp, 0, MinutesAfterRiskySignIn <= 60, 1, 2)
+| project RiskyTime, ChangeTime, MinutesAfterRiskySignIn, Severity, SeverityRank, UserPrincipalName,
+          RiskLevel, RiskIP, RiskCountry, RiskApp, ChangeOperation, ChangeActor, ChangeIp,
+          SameIp, SelfService, ChangeDetail, RiskAgent
+| order by SeverityRank asc, RiskyTime desc

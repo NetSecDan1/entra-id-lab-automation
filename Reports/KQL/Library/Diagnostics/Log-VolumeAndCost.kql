@@ -1,0 +1,34 @@
+// =============================================================================
+// Name:       Log volume and estimated cost
+// Domain:     Diagnostics
+// Tables:     all Entra ID diagnostic tables (isfuzzy)
+// Severity:   info
+// Safety:     READ-ONLY.
+// Purpose:    Per-table row and byte volume so you can size a workspace, forecast spend, and
+//             spot a table that suddenly exploded (a chatty app hammering Graph, a sign-in
+//             storm, a misconfigured provisioning job).
+// Tuning:     lookback - profiling window. Longer is better for a monthly forecast.
+// Reading it: EstimatedMonthlyGB multiplied by your workspace's per-GB rate approximates spend.
+//             AADNonInteractiveUserSignInLogs is almost always the largest table by an order of
+//             magnitude - that is normal, not a fault. PeakRowsInOneDay far above AvgRowsPerDay
+//             is the interesting signal.
+// Caveat:     estimate_data_size() measures the uncompressed row payload, so this is an upper
+//             bound on billed ingestion, not an invoice. Basic Logs / commitment tiers change
+//             the real figure.
+// =============================================================================
+let lookback = 30d;
+union withsource = TableName isfuzzy = true
+        SigninLogs, AADNonInteractiveUserSignInLogs, AADServicePrincipalSignInLogs,
+        AADManagedIdentitySignInLogs, AuditLogs, AADProvisioningLogs,
+        AADRiskyUsers, AADUserRiskEvents, MicrosoftGraphActivityLogs
+| where TimeGenerated > ago(lookback)
+| summarize Rows = count(), Bytes = sum(estimate_data_size(*)) by TableName, Day = bin(TimeGenerated, 1d)
+| summarize TotalRows        = sum(Rows),
+            DaysWithData     = dcount(Day),
+            AvgRowsPerDay    = round(avg(Rows), 0),
+            PeakRowsInOneDay = max(Rows),
+            AvgMBPerDay      = round(avg(Bytes) / 1024.0 / 1024.0, 2)
+        by TableName
+| extend EstimatedMonthlyGB = round(AvgMBPerDay * 30 / 1024.0, 3),
+         BurstRatio         = round(PeakRowsInOneDay / iff(AvgRowsPerDay == 0, 1.0, AvgRowsPerDay), 2)
+| order by AvgMBPerDay desc

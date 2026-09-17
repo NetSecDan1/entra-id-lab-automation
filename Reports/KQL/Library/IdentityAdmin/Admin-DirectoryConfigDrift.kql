@@ -1,0 +1,43 @@
+// =============================================================================
+// Name:       Tenant-wide security setting drift
+// Domain:     Identity administration
+// Tables:     AuditLogs
+// Severity:   high
+// Safety:     READ-ONLY.
+// Purpose:    Changes to tenant-level policy - authorization policy, external collaboration
+//             settings, cross-tenant access, security defaults, password protection. These are
+//             low-frequency, high-blast-radius settings that rarely appear on anyone's
+//             monitoring list until after they have been changed.
+// Tuning:     lookback - 90d. The operation list is deliberately broad; narrow it once you know
+//             what your tenant emits normally.
+// Reading it: Every row should map to a change record. The ones worth alerting on:
+//             - "Allow users to consent to apps" turning on
+//             - guest invite restrictions loosening to "everyone"
+//             - security defaults being disabled without CA policies in place to replace them
+//             - a new partner added to cross-tenant access with inbound trust enabled
+// Next step:  Directory/Deploy-DirectorySettings.ps1 in this repo is what sets many of these,
+//             so a drift row with no matching deployment run means a manual change.
+// =============================================================================
+let lookback = 90d;
+let valueTruncation = 300;
+AuditLogs
+| where TimeGenerated > ago(lookback)
+| where OperationName has_any ("authorization policy", "company settings", "directory settings",
+                               "cross-tenant access", "Set Company Information", "user settings",
+                               "Password Reset policy", "tenant settings", "Security defaults",
+                               "Strong Authentication", "Update policy", "banned password",
+                               "Update domain", "Add verified domain", "Add unverified domain",
+                               "Update federation settings", "Set federation settings")
+| extend Actor     = coalesce(tostring(InitiatedBy.user.userPrincipalName), tostring(InitiatedBy.app.displayName)),
+         ActorType = iff(isnotempty(tostring(InitiatedBy.app.displayName)), "Application", "User"),
+         ActorIp   = tostring(InitiatedBy.user.ipAddress)
+| mv-expand Target = TargetResources
+| extend SettingScope = tostring(Target.displayName), TargetType = tostring(Target.type)
+| mv-expand Prop = Target.modifiedProperties
+| extend PropName = tostring(Prop.displayName),
+         OldValue = substring(trim('"', tostring(Prop.oldValue)), 0, valueTruncation),
+         NewValue = substring(trim('"', tostring(Prop.newValue)), 0, valueTruncation)
+| where isnotempty(PropName) and OldValue != NewValue
+| project TimeGenerated, OperationName, SettingScope, TargetType, PropName, OldValue, NewValue,
+          Actor, ActorType, ActorIp, Result = tostring(ResultType), CorrelationId
+| order by TimeGenerated desc

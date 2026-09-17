@@ -1,0 +1,49 @@
+// =============================================================================
+// Name:       Authentication method strength mix
+// Domain:     Hygiene
+// Tables:     SigninLogs
+// Severity:   high
+// Safety:     READ-ONLY.
+// Purpose:    What your users ACTUALLY authenticate with, classified by resistance to
+//             phishing - as opposed to what they have registered, which is a different and
+//             more flattering number. This is the measurement behind any passwordless or
+//             phishing-resistant MFA programme.
+// Tuning:     lookback - 30d gives a stable mix. The Class mapping reflects Microsoft's method
+//             names, which change over time; check the "Other" bucket occasionally and fold new
+//             names into the right class.
+// Reading it: Read it as a funnel from the bottom up.
+//             Single factor      - password only. Should trend to zero.
+//             Weak (SMS/voice)   - defeated by SIM swap and real-time phishing proxies. The
+//                                  migration target.
+//             Strong (phishable) - Authenticator push/TOTP. Good, but an attacker-in-the-middle
+//                                  proxy still defeats it (see Threat-MfaFatigue.kql).
+//             Phishing-resistant - FIDO2, passkeys, Windows Hello, certificate-based. The goal.
+// Caveat:     "Previously satisfied" is excluded, since it reports a cached prior authentication
+//             rather than a method used now. Counting it would overstate your position.
+// =============================================================================
+let lookback = 30d;
+SigninLogs
+| where TimeGenerated > ago(lookback)
+| where ResultType == "0"
+| mv-apply Detail = todynamic(AuthenticationDetails) on (
+      extend Method    = tostring(Detail.authenticationMethod),
+             Succeeded = tostring(Detail.succeeded)
+    | where Succeeded =~ "true" and isnotempty(Method) and Method !~ "Previously satisfied"
+    | summarize Methods = make_set(Method, 10)
+  )
+| mv-expand Method = Methods to typeof(string)
+| extend Class = case(
+        Method has_any ("FIDO2", "Windows Hello", "X.509", "Certificate", "Passkey", "certificate"), "1 - Phishing-resistant",
+        Method has_any ("Authenticator", "Passwordless phone sign-in", "Push", "Mobile app notification",
+                        "Hardware OATH", "Software OATH", "OATH"),                                    "2 - Strong but phishable",
+        Method has_any ("Text message", "SMS", "Voice call", "Mobile app verification code", "Phone"), "3 - Weak (SMS or voice)",
+        Method has_any ("Password", "Federated", "Single-factor", "Windows Integrated"),               "4 - Single factor",
+                                                                                                      "5 - Other / unclassified")
+| summarize SignIns       = count(),
+            DistinctUsers = dcount(UserPrincipalName),
+            SampleUsers   = make_set(UserPrincipalName, 15),
+            Apps          = make_set(AppDisplayName, 8),
+            FirstSeen     = min(TimeGenerated),
+            LastSeen      = max(TimeGenerated)
+        by Class, Method
+| order by Class asc, SignIns desc

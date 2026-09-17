@@ -1,0 +1,39 @@
+// =============================================================================
+// Name:       Named location usage
+// Domain:     Hygiene
+// Tables:     SigninLogs
+// Severity:   medium
+// Safety:     READ-ONLY.
+// Purpose:    Named locations quietly rot. Office IP ranges change, VPN egress moves, and a
+//             trusted location that no longer matches any real traffic weakens every policy
+//             built on it. This shows which named locations actually matched sign-ins.
+// Tuning:     lookback - 30d.
+// Reading it: A trusted named location with few or no sign-ins is either obsolete or was never
+//             right. Conversely a large share of sign-ins matching NO named location means your
+//             location-based policies are covering less than the design assumed.
+//             networkType values: trustedNamedLocation, namedLocation, and (empty) for traffic
+//             matching nothing.
+// Caveat:     This repo's NamedLocations/Deploy-NamedLocations.ps1 ships the documentation
+//             range 203.0.113.0/24 as a placeholder. If that range appears here with zero
+//             sign-ins, the config was never customised - see Helpers/Common.ps1, which warns
+//             about exactly that.
+// =============================================================================
+let lookback = 30d;
+SigninLogs
+| where TimeGenerated > ago(lookback)
+| extend LocationList = todynamic(NetworkLocationDetails)
+| extend HasNamedLocation = array_length(LocationList) > 0
+| mv-expand Loc = LocationList
+| extend NetworkType  = iff(HasNamedLocation, tostring(Loc.networkType), "(no named location matched)"),
+         NetworkNames = iff(HasNamedLocation, tostring(Loc.networkNames), "")
+| summarize SignIns          = count(),
+            Successful       = countif(ResultType == "0"),
+            DistinctUsers    = dcount(UserPrincipalName),
+            DistinctIPs      = dcount(IPAddress),
+            SampleIPs        = make_set(IPAddress, 10),
+            Countries        = make_set(tostring(LocationDetails.countryOrRegion), 8),
+            SingleFactor     = countif(AuthenticationRequirement == "singleFactorAuthentication"),
+            FirstSeen        = min(TimeGenerated),
+            LastSeen         = max(TimeGenerated)
+        by NetworkType, NetworkNames
+| order by SignIns desc

@@ -1,0 +1,41 @@
+// =============================================================================
+// Name:       Successful sign-ins with no Conditional Access applied
+// Domain:     Sign-in posture
+// Tables:     SigninLogs
+// Severity:   high
+// Safety:     READ-ONLY.
+// Purpose:    Finds the holes in your CA scope. Every row is an application that users are
+//             successfully reaching with no enforced CA policy at all - either the app is
+//             excluded, the users are excluded, or no policy targets that combination.
+// Tuning:     lookback - window. Some first-party Microsoft flows legitimately bypass CA;
+//             build an allowlist with `| where AppId !in (...)` once you have triaged them.
+// Reading it: Sort by SingleFactor. An app reached with no CA AND no second factor is a
+//             genuine unprotected path. An app with no CA but multiFactorAuthentication on
+//             every sign-in is lower risk - MFA is coming from elsewhere (per-user MFA or
+//             Security Defaults).
+// Caveat:     "notApplied" covers both "no policy targets this" and "policy conditions did not
+//             match" - the fix differs. Use SignIn-ReportOnlyWouldBlock.kql to see whether a
+//             report-only policy already covers the gap before you write a new one.
+// =============================================================================
+let lookback = 7d;
+SigninLogs
+| where TimeGenerated > ago(lookback)
+| where ResultType == "0"
+| where ConditionalAccessStatus =~ "notApplied"
+| extend Country     = tostring(LocationDetails.countryOrRegion),
+         IsCompliant = tobool(DeviceDetail.isCompliant),
+         DeviceId    = tostring(DeviceDetail.deviceId)
+| summarize UnprotectedSignIns = count(),
+            DistinctUsers      = dcount(UserPrincipalName),
+            SampleUsers        = make_set(UserPrincipalName, 10),
+            ClientApps         = make_set(ClientAppUsed, 5),
+            Countries          = make_set(Country, 5),
+            SingleFactor       = countif(AuthenticationRequirement == "singleFactorAuthentication"),
+            GuestSignIns       = countif(UserType =~ "Guest"),
+            UnregisteredDevice = countif(isempty(DeviceId)),
+            LastSeen           = max(TimeGenerated)
+        by AppDisplayName, AppId
+| extend Severity = case(SingleFactor > 0 and UnregisteredDevice > 0, "High",
+                         SingleFactor > 0,                            "Medium",
+                                                                      "Low")
+| order by SingleFactor desc, UnprotectedSignIns desc

@@ -1,0 +1,53 @@
+// =============================================================================
+// Name:       Conditional Access policy effectiveness
+// Domain:     Hygiene
+// Tables:     SigninLogs
+// Severity:   high
+// Safety:     READ-ONLY.
+// Purpose:    For every CA policy the tenant evaluated, how often it actually applied, blocked,
+//             or did nothing. This is how you find policies that look protective in the portal
+//             but have never enforced anything against a real sign-in - a mis-scoped policy is
+//             functionally identical to no policy.
+// Tuning:     lookback - 30d. Use at least a full business cycle before concluding a policy is
+//             dead; some policies exist for rare conditions and correctly never fire.
+// Reading it: Verdict summarises each policy.
+//             NEVER ENFORCED - evaluated but never applied to anyone. Either the scope is wrong
+//                              or every matching user is excluded. Highest-value finding here.
+//             Report-only only - still in report-only. Check age with
+//                              IAM/Get-CAPolicyHealthReport.ps1; report-only forever is a gap.
+//             Enforced, never blocked - working as intended, or trivially satisfiable.
+//             AppliedRatePct shows what share of evaluations actually resulted in enforcement.
+// Caveat:     A policy that exists but was never EVALUATED at all (no sign-in matched its
+//             conditions even to be considered) will not appear in this list. Compare the row
+//             count here against the live policy count from Graph.
+// =============================================================================
+let lookback = 30d;
+SigninLogs
+| where TimeGenerated > ago(lookback)
+| mv-expand Policy = AppliedConditionalAccessPolicies
+| extend PolicyName   = tostring(Policy.displayName),
+         PolicyId     = tostring(Policy.id),
+         PolicyResult = tostring(Policy.result)
+| summarize Evaluations           = count(),
+            Applied               = countif(PolicyResult in ("success", "failure")),
+            Success               = countif(PolicyResult == "success"),
+            Failure               = countif(PolicyResult == "failure"),
+            NotApplied            = countif(PolicyResult == "notApplied"),
+            ReportOnlySuccess     = countif(PolicyResult == "reportOnlySuccess"),
+            ReportOnlyFailure     = countif(PolicyResult == "reportOnlyFailure"),
+            ReportOnlyInterrupted = countif(PolicyResult == "reportOnlyInterrupted"),
+            ReportOnlyNotApplied  = countif(PolicyResult == "reportOnlyNotApplied"),
+            DistinctUsers         = dcount(UserPrincipalName),
+            LastApplied           = maxif(TimeGenerated, PolicyResult in ("success", "failure"))
+        by PolicyName, PolicyId
+| extend IsReportOnly = (Applied == 0)
+                        and (ReportOnlySuccess + ReportOnlyFailure + ReportOnlyInterrupted + ReportOnlyNotApplied) > 0
+| extend Verdict = case(
+        IsReportOnly,                     "Report-only only - never enforced",
+        Applied == 0,                     "NEVER ENFORCED - scope may be wrong or policy is dead",
+        Failure == 0 and Success > 0,     "Enforced, never blocked",
+                                          "Enforced and blocking")
+| extend AppliedRatePct = round(100.0 * Applied / Evaluations, 1)
+| project PolicyName, PolicyId, Verdict, AppliedRatePct, Evaluations, Applied, Success, Failure,
+          NotApplied, ReportOnlyFailure, ReportOnlyInterrupted, DistinctUsers, LastApplied
+| order by Applied asc, Evaluations desc

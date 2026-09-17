@@ -1,0 +1,46 @@
+// =============================================================================
+// Name:       Targeted brute force against a single account
+// Domain:     Threat hunting
+// Tables:     SigninLogs
+// Severity:   high
+// Safety:     READ-ONLY.
+// Purpose:    The mirror image of password spray - many attempts, many source IPs, ONE account.
+//             Typically an account whose address the attacker already knows, often an admin or
+//             an executive.
+// Tuning:     minFailures - failed attempts in a bucket before a row is emitted. bucket - time
+//             window. Benign interrupt codes (KMSI, silent-auth, token freshness) are excluded
+//             from the failure count so normal client churn does not look like an attack.
+// Reading it: CRITICAL = failures from 3+ distinct IPs followed by a success in the same window.
+//             That is a likely compromise. Lockouts > 0 means smart lockout engaged - the attack
+//             was throttled but the account is also now being denied to its real owner.
+// Next step:  Threat-ImpossibleTravel.kql and Threat-FirstTimeCountry.kql on the same user will
+//             usually corroborate or clear a suspected success.
+// =============================================================================
+let lookback = 7d;
+let bucket = 1h;
+let minFailures = 10;
+let benignInterrupts = dynamic(["0", "50140", "50058", "50173", "16000", "50133", "81010"]);
+SigninLogs
+| where TimeGenerated > ago(lookback)
+| where isnotempty(UserPrincipalName)
+| summarize Failures     = countif(ResultType !in (benignInterrupts)),
+            Successes    = countif(ResultType == "0"),
+            Lockouts     = countif(ResultType == "50053"),
+            BadPassword  = countif(ResultType == "50126"),
+            DistinctIPs  = dcountif(IPAddress, ResultType !in (benignInterrupts)),
+            IPs          = make_set(IPAddress, 15),
+            Countries    = make_set(tostring(LocationDetails.countryOrRegion), 10),
+            UserAgents   = make_set(UserAgent, 5),
+            Apps         = make_set(AppDisplayName, 8),
+            FirstSeen    = min(TimeGenerated),
+            LastSeen     = max(TimeGenerated)
+        by UserPrincipalName, Window = bin(TimeGenerated, bucket)
+| where Failures >= minFailures
+| extend Severity = case(Successes > 0 and DistinctIPs >= 3, "CRITICAL - success after distributed failures",
+                         Successes > 0,                      "High - success in same window as failures",
+                         Lockouts > 0,                        "High - smart lockout engaged",
+                                                              "Medium"),
+         SeverityRank = case(Successes > 0 and DistinctIPs >= 3, 0, Successes > 0, 1, Lockouts > 0, 2, 3)
+| project Window, UserPrincipalName, Severity, SeverityRank, Failures, Successes, Lockouts,
+          BadPassword, DistinctIPs, IPs, Countries, UserAgents, Apps, FirstSeen, LastSeen
+| order by SeverityRank asc, Window desc, Failures desc

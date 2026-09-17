@@ -1,0 +1,54 @@
+// =============================================================================
+// Name:       Impossible travel (geodesic, speed-based)
+// Domain:     Threat hunting
+// Tables:     SigninLogs
+// Severity:   high
+// Safety:     READ-ONLY.
+// Purpose:    Consecutive successful sign-ins by the same user from locations further apart
+//             than they could physically travel in the elapsed time. Uses real great-circle
+//             distance from the sign-in geo-coordinates rather than a country-changed heuristic,
+//             so it does not fire on a short hop across a land border.
+// Tuning:     maxPlausibleKmh - implied speed above which travel is impossible. 900 is roughly
+//             a commercial jet; drop to 300 to also catch "possible but suspicious". minKmApart
+//             - ignore pairs closer than this, which suppresses metro-area IP geolocation jitter.
+// Reading it: ImpliedKmh is the headline. Above ~1000 km/h with a large DistanceKm is a strong
+//             signal. Compare FromIP and ToIP: a corporate egress IP paired with a residential
+//             or hosting IP is more interesting than two datacenter IPs.
+// Caveat:     THE false-positive engine here is VPN, corporate split-tunnel egress, and mobile
+//             carrier CGNAT. Confirm with UserAgent continuity and Threat-FirstTimeCountry.kql
+//             before treating a row as an incident. Sign-ins without geo-coordinates are skipped.
+// =============================================================================
+let lookback = 7d;
+let maxPlausibleKmh = 900.0;
+let minKmApart = 500.0;
+SigninLogs
+| where TimeGenerated > ago(lookback)
+| where ResultType == "0"
+| where isnotempty(UserPrincipalName)
+| extend Country = tostring(LocationDetails.countryOrRegion),
+         City    = tostring(LocationDetails.city),
+         Lat     = todouble(LocationDetails.geoCoordinates.latitude),
+         Lon     = todouble(LocationDetails.geoCoordinates.longitude)
+| where isnotnull(Lat) and isnotnull(Lon) and (Lat != 0.0 or Lon != 0.0)
+| sort by UserPrincipalName asc, TimeGenerated asc
+| extend PrevUser    = prev(UserPrincipalName),
+         PrevTime    = prev(TimeGenerated),
+         PrevLat     = prev(Lat),
+         PrevLon     = prev(Lon),
+         PrevCity    = prev(City),
+         PrevCountry = prev(Country),
+         PrevIP      = prev(IPAddress),
+         PrevAgent   = prev(UserAgent)
+| where PrevUser == UserPrincipalName
+| extend DistanceKm   = round(geo_distance_2points(Lon, Lat, PrevLon, PrevLat) / 1000.0, 1)
+| extend ElapsedHours = round(datetime_diff('second', TimeGenerated, PrevTime) / 3600.0, 4)
+| where ElapsedHours > 0 and DistanceKm >= minKmApart
+| extend ImpliedKmh = round(DistanceKm / ElapsedHours, 0)
+| where ImpliedKmh > maxPlausibleKmh
+| extend SameUserAgent = PrevAgent == UserAgent
+| project TimeGenerated, UserPrincipalName, ImpliedKmh, DistanceKm, ElapsedHours,
+          FromCity = PrevCity, FromCountry = PrevCountry, FromIP = PrevIP,
+          ToCity = City, ToCountry = Country, ToIP = IPAddress,
+          SameUserAgent, AppDisplayName, ClientAppUsed, UserAgent,
+          AuthenticationRequirement, ConditionalAccessStatus
+| order by ImpliedKmh desc

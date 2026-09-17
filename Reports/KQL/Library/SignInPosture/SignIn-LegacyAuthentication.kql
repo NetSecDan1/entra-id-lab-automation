@@ -1,0 +1,47 @@
+// =============================================================================
+// Name:       Legacy authentication usage and whether it is blocked
+// Domain:     Sign-in posture
+// Tables:     SigninLogs
+// Severity:   critical
+// Safety:     READ-ONLY.
+// Purpose:    Legacy/basic auth protocols cannot present an MFA challenge, so any account
+//             reachable over them is effectively password-only regardless of your CA policies.
+//             This shows what is still using them and - critically - whether it is succeeding.
+// Tuning:     lookback - window. legacyClients covers the standard ClientAppUsed values; the
+//             catch-all "Other clients" is the one that matters most.
+// Reading it: Verdict is the whole answer.
+//             STILL GETTING THROUGH = legacy auth is succeeding. Highest priority finding here.
+//             Blocked by CA         = your block-legacy-auth policy is working; the Users column
+//                                     tells you who still needs a client upgrade before you can
+//                                     consider this done.
+// Workflow:   Run this before AND after enabling a "block legacy auth" policy. The before run
+//             is your impact assessment; the after run is your proof.
+// =============================================================================
+let lookback = 7d;
+let legacyClients = dynamic([
+    "Exchange ActiveSync", "Exchange Online PowerShell", "Exchange Web Services", "IMAP4",
+    "MAPI Over HTTP", "Offline Address Book", "Other clients", "POP3",
+    "Reporting Web Services", "Authenticated SMTP", "Autodiscover",
+    "Outlook Anywhere (RPC over HTTP)", "AutoDiscover"
+]);
+SigninLogs
+| where TimeGenerated > ago(lookback)
+| where ClientAppUsed in (legacyClients)
+| extend Country = tostring(LocationDetails.countryOrRegion)
+| summarize Attempts      = count(),
+            Successful    = countif(ResultType == "0"),
+            BlockedByCA   = countif(ResultType == "53003"),
+            BadCredential = countif(ResultType in ("50126", "50053")),
+            OtherFailures = countif(ResultType !in ("0", "53003", "50126", "50053")),
+            Users         = make_set(UserPrincipalName, 20),
+            IPs           = make_set(IPAddress, 10),
+            Countries     = make_set(Country, 8),
+            UserAgents    = make_set(UserAgent, 5),
+            FirstSeen     = min(TimeGenerated),
+            LastSeen      = max(TimeGenerated)
+        by ClientAppUsed, AppDisplayName
+| extend Verdict = case(Successful > 0,    "STILL GETTING THROUGH",
+                        BlockedByCA > 0,   "Blocked by Conditional Access",
+                        BadCredential > 0, "Failing on credentials (likely attack traffic)",
+                                           "Failing for other reasons")
+| order by Successful desc, Attempts desc

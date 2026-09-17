@@ -1,0 +1,52 @@
+// =============================================================================
+// Name:       Break-glass account usage
+// Domain:     Identity administration
+// Tables:     SigninLogs, AADNonInteractiveUserSignInLogs, AuditLogs
+// Severity:   critical
+// Safety:     READ-ONLY.
+// Purpose:    Emergency access accounts are excluded from Conditional Access by design, which
+//             makes them the most valuable credentials in the tenant. Every single use should
+//             be accounted for. This shows both sign-ins and directory actions.
+// Tuning:     breakGlassPattern - MUST be set to your naming convention. This repo's
+//             Users/Deploy-Users.ps1 creates accounts matching "breakglass" by default; change
+//             it if your production naming differs, and never rely on the default in a tenant
+//             you did not build with this repo.
+// Reading it: There are two findings here, in opposite directions:
+//             1. ANY unexplained row - an emergency account used outside an incident.
+//             2. NO rows at all over a quarter - the accounts have never been validated. An
+//                untested break-glass account is not a control, it is an assumption. Most
+//                frameworks expect a documented quarterly test.
+// Caveat:     Deliberately matches on UPN substring rather than object ID, so it still works
+//             if the accounts were recreated. Verify it is matching what you expect before
+//             concluding "no usage".
+// =============================================================================
+let lookback = 90d;
+let breakGlassPattern = "breakglass";
+union isfuzzy = true
+    (SigninLogs
+        | where TimeGenerated > ago(lookback)
+        | where UserPrincipalName contains breakGlassPattern
+        | project TimeGenerated, EventKind = "Interactive sign-in", Account = UserPrincipalName,
+                  Detail = AppDisplayName, IPAddress,
+                  Country = tostring(LocationDetails.countryOrRegion),
+                  Result = strcat(tostring(ResultType), " ", ResultDescription),
+                  ConditionalAccess = ConditionalAccessStatus,
+                  AuthRequirement = AuthenticationRequirement, Client = ClientAppUsed, Agent = UserAgent),
+    (AADNonInteractiveUserSignInLogs
+        | where TimeGenerated > ago(lookback)
+        | where UserPrincipalName contains breakGlassPattern
+        | project TimeGenerated, EventKind = "Non-interactive sign-in", Account = UserPrincipalName,
+                  Detail = AppDisplayName, IPAddress,
+                  Country = tostring(LocationDetails.countryOrRegion),
+                  Result = strcat(tostring(ResultType), " ", ResultDescription),
+                  ConditionalAccess = ConditionalAccessStatus,
+                  AuthRequirement = AuthenticationRequirement, Client = ClientAppUsed, Agent = UserAgent),
+    (AuditLogs
+        | where TimeGenerated > ago(lookback)
+        | where tostring(InitiatedBy.user.userPrincipalName) contains breakGlassPattern
+        | project TimeGenerated, EventKind = "Directory action",
+                  Account = tostring(InitiatedBy.user.userPrincipalName),
+                  Detail = OperationName, IPAddress = tostring(InitiatedBy.user.ipAddress),
+                  Country = "", Result = tostring(ResultType),
+                  ConditionalAccess = "", AuthRequirement = "", Client = LoggedByService, Agent = "")
+| order by TimeGenerated desc

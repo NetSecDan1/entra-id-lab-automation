@@ -1,0 +1,57 @@
+// =============================================================================
+// Name:       Log ingestion health
+// Domain:     Diagnostics
+// Tables:     SigninLogs, AADNonInteractiveUserSignInLogs, AADServicePrincipalSignInLogs,
+//             AADManagedIdentitySignInLogs, AuditLogs, AADProvisioningLogs, AADRiskyUsers,
+//             AADUserRiskEvents, AADRiskyServicePrincipals, AADServicePrincipalRiskEvents,
+//             MicrosoftGraphActivityLogs
+// Severity:   info
+// Safety:     READ-ONLY. Reads log data only; changes nothing.
+// Purpose:    Run this FIRST. Every other query in this library is only as good as the
+//             data behind it. This shows which Entra ID diagnostic categories are actually
+//             reaching the workspace, which are silently missing, and which have gone stale.
+//             A "MISSING" row is a blind spot, not an all-clear.
+// Tuning:     lookback  - evaluation window. staleMinutes - how long without a row before a
+//             flowing category counts as stale (Entra export is near-real-time but bursty;
+//             240 minutes is forgiving enough for a quiet lab).
+// Reading it: MISSING  = category not enabled in Diagnostic Settings, or not licensed (P2 rows).
+//             STALE    = export was configured but stopped delivering. Check the diagnostic
+//                        setting on the tenant and the destination workspace's retention/cap.
+//             OK       = trustworthy for the other queries in this library.
+// Caveat:     Risk tables (AADRiskyUsers, AADUserRiskEvents, AAD*ServicePrincipalRisk*) need
+//             Entra ID P2. Absent on P1 is expected, not a misconfiguration.
+// =============================================================================
+let lookback = 7d;
+let staleMinutes = 240;
+let expected = datatable(TableName: string, DiagnosticCategory: string, Requirement: string)
+[
+    "SigninLogs",                      "SignInLogs",                   "Required - interactive user sign-ins",
+    "AADNonInteractiveUserSignInLogs", "NonInteractiveUserSignInLogs", "Required - token refresh and client flows",
+    "AADServicePrincipalSignInLogs",   "ServicePrincipalSignInLogs",   "Required - app-only (daemon) sign-ins",
+    "AADManagedIdentitySignInLogs",    "ManagedIdentitySignInLogs",    "Recommended - managed identity usage",
+    "AuditLogs",                       "AuditLogs",                    "Required - directory change tracking",
+    "AADProvisioningLogs",             "ProvisioningLogs",             "Optional - SCIM / HR-driven provisioning",
+    "AADRiskyUsers",                   "RiskyUsers",                   "P2 - Identity Protection risky users",
+    "AADUserRiskEvents",               "UserRiskEvents",               "P2 - Identity Protection detections",
+    "AADRiskyServicePrincipals",       "RiskyServicePrincipals",       "P2 - workload identity risk",
+    "AADServicePrincipalRiskEvents",   "ServicePrincipalRiskEvents",   "P2 - workload identity detections",
+    "MicrosoftGraphActivityLogs",      "MicrosoftGraphActivityLogs",   "Recommended - Graph API call auditing"
+];
+let seen = union withsource = TableName isfuzzy = true
+        SigninLogs, AADNonInteractiveUserSignInLogs, AADServicePrincipalSignInLogs,
+        AADManagedIdentitySignInLogs, AuditLogs, AADProvisioningLogs, AADRiskyUsers,
+        AADUserRiskEvents, AADRiskyServicePrincipals, AADServicePrincipalRiskEvents,
+        MicrosoftGraphActivityLogs
+    | where TimeGenerated > ago(lookback)
+    | summarize Rows = count(), FirstSeen = min(TimeGenerated), LastSeen = max(TimeGenerated) by TableName;
+expected
+| join kind = leftouter seen on TableName
+| extend Rows = iff(isnull(Rows), 0L, Rows)
+| extend MinutesSinceLastRow = iff(isnull(LastSeen), int(null), datetime_diff('minute', now(), LastSeen))
+| extend Status = case(
+        Rows == 0,                                "MISSING - no rows in window",
+        MinutesSinceLastRow > staleMinutes,       "STALE - export may have stopped",
+                                                  "OK")
+| extend IsBlindSpot = Status != "OK" and Requirement startswith "Required"
+| project TableName, DiagnosticCategory, Requirement, Status, IsBlindSpot, Rows, FirstSeen, LastSeen, MinutesSinceLastRow
+| order by IsBlindSpot desc, Status asc, TableName asc

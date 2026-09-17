@@ -1,0 +1,45 @@
+// =============================================================================
+// Name:       Corporate resource access from unmanaged devices
+// Domain:     Sign-in posture
+// Tables:     SigninLogs
+// Severity:   medium
+// Safety:     READ-ONLY.
+// Purpose:    Device-based Conditional Access is only meaningful if you know where the
+//             unmanaged access is happening. This shows successful sign-ins from devices that
+//             are not Entra-registered or not compliant, grouped by application.
+// Tuning:     lookback - window. If you only care about a specific app, add
+//             `| where AppDisplayName == "..."` after the first filter.
+// Reading it: UnregisteredDeviceSignIns (no deviceId at all) is BYOD or attacker infrastructure;
+//             a registered-but-noncompliant device is a managed device that has drifted. Pair a
+//             high SingleFactor count with an unregistered device and you have the weakest
+//             possible access path to that app.
+// Caveat:     Mobile browser sessions and some non-interactive flows legitimately carry no
+//             device identity. Establish a baseline before treating volume alone as a finding.
+// =============================================================================
+let lookback = 7d;
+SigninLogs
+| where TimeGenerated > ago(lookback)
+| where ResultType == "0"
+| extend IsCompliant = tobool(DeviceDetail.isCompliant),
+         IsManaged   = tobool(DeviceDetail.isManaged),
+         TrustType   = tostring(DeviceDetail.trustType),
+         DeviceId    = tostring(DeviceDetail.deviceId),
+         OS          = tostring(DeviceDetail.operatingSystem),
+         Browser     = tostring(DeviceDetail.browser)
+| where isempty(DeviceId) or IsCompliant != true
+| summarize SignIns                   = count(),
+            DistinctUsers             = dcount(UserPrincipalName),
+            Users                     = make_set(UserPrincipalName, 20),
+            OperatingSystems          = make_set(OS, 8),
+            Browsers                  = make_set(Browser, 8),
+            TrustTypes                = make_set(TrustType, 5),
+            UnregisteredDeviceSignIns = countif(isempty(DeviceId)),
+            NonCompliantRegistered    = countif(isnotempty(DeviceId) and IsCompliant != true),
+            SingleFactor              = countif(AuthenticationRequirement == "singleFactorAuthentication"),
+            NoCAApplied               = countif(ConditionalAccessStatus =~ "notApplied"),
+            LastSeen                  = max(TimeGenerated)
+        by AppDisplayName, AppId
+| extend Severity = case(SingleFactor > 0 and NoCAApplied > 0, "High",
+                         SingleFactor > 0,                     "Medium",
+                                                               "Low")
+| order by SignIns desc

@@ -1,0 +1,38 @@
+// =============================================================================
+// Name:       Graph API callers and throttling
+// Domain:     Diagnostics
+// Tables:     MicrosoftGraphActivityLogs
+// Severity:   info
+// Safety:     READ-ONLY.
+// Purpose:    Who is calling Microsoft Graph in this tenant, how hard, and how often they get
+//             throttled. Two uses: (1) diagnosing an automation that has started failing or
+//             running slow, (2) spotting an app enumerating far more of the directory than its
+//             purpose justifies.
+// Tuning:     lookback - window. Raise the take limit if you have many workload identities.
+// Reading it: ThrottleRatePct above ~5 means the caller needs backoff or batching, and any
+//             report built on it is probably losing rows silently. A high DistinctPaths with
+//             directory-wide paths (/users, /groups, /servicePrincipals) from an app you do not
+//             recognise deserves a look at its granted permissions.
+// Caveat:     MicrosoftGraphActivityLogs must be enabled in the tenant diagnostic settings
+//             (it is off by default and is not the same category as AuditLogs). GUIDs in the
+//             request path are normalised to {id} so paths group sensibly.
+// =============================================================================
+let lookback = 7d;
+MicrosoftGraphActivityLogs
+| where TimeGenerated > ago(lookback)
+| extend Path = tostring(parse_url(tostring(RequestUri)).Path)
+| extend NormalizedPath = replace_regex(Path, @'/[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}', '/{id}')
+| summarize Calls          = count(),
+            Throttled      = countif(toint(ResponseStatusCode) == 429),
+            ClientErrors   = countif(toint(ResponseStatusCode) between (400 .. 499) and toint(ResponseStatusCode) != 429),
+            ServerErrors   = countif(toint(ResponseStatusCode) >= 500),
+            DistinctPaths  = dcount(NormalizedPath),
+            TopPaths       = make_set(NormalizedPath, 8),
+            Methods        = make_set(RequestMethod, 6),
+            P95DurationMs  = round(percentile(DurationMs, 95), 0),
+            LastSeen       = max(TimeGenerated)
+        by AppId, ServicePrincipalId, AuthMethod = tostring(ClientAuthMethod)
+| extend ThrottleRatePct = round(100.0 * Throttled / Calls, 2),
+         ErrorRatePct    = round(100.0 * (ClientErrors + ServerErrors) / Calls, 2)
+| order by Calls desc
+| take 100

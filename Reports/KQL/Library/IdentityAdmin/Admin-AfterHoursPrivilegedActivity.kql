@@ -1,0 +1,53 @@
+// =============================================================================
+// Name:       Privileged activity outside business hours
+// Domain:     Identity administration
+// Tables:     AuditLogs
+// Severity:   medium
+// Safety:     READ-ONLY.
+// Purpose:    Timing as a signal. Legitimate administration clusters in business hours and
+//             change windows; an attacker operating from another timezone, or an insider acting
+//             when nobody is watching, does not. Groups privileged operations by actor,
+//             restricted to evenings, nights and weekends.
+// Tuning:     tzOffsetHours - MUST be set to your operations team's UTC offset or the whole
+//             query is meaningless. businessStartHour / businessEndHour - your working day in
+//             that local time. If you run follow-the-sun operations, this query is not useful
+//             as written; narrow it by actor group instead.
+// Reading it: This is a triage aid, not a detection - a scheduled maintenance job will show up
+//             here every week. Look for a NEW actor appearing after hours, or a familiar actor
+//             whose after-hours volume suddenly jumps. DistinctOperations tells you whether it
+//             was a repetitive job or varied interactive work.
+// Caveat:     Categories vary by tenant; the query falls back to matching operation-name
+//             substrings so it still returns useful rows if Category is sparse.
+// =============================================================================
+let lookback = 30d;
+let tzOffsetHours = 0;
+let businessStartHour = 7;
+let businessEndHour = 19;
+AuditLogs
+| where TimeGenerated > ago(lookback)
+| where ResultType =~ "success"
+| where Category in ("RoleManagement", "ApplicationManagement", "Policy", "UserManagement",
+                     "DirectoryManagement", "GroupManagement")
+     or OperationName has_any ("role", "conditional access", "credential", "consent", "policy")
+| extend LocalTime = TimeGenerated + (tzOffsetHours * 1h)
+| extend LocalHour = datetime_part("hour", LocalTime),
+         WeekDay   = dayofweek(LocalTime)
+| extend IsWeekend    = WeekDay == 0d or WeekDay == 6d,
+         IsAfterHours = LocalHour < businessStartHour or LocalHour >= businessEndHour
+| where IsAfterHours or IsWeekend
+| extend Actor     = coalesce(tostring(InitiatedBy.user.userPrincipalName), tostring(InitiatedBy.app.displayName)),
+         ActorType = iff(isnotempty(tostring(InitiatedBy.app.displayName)), "Application", "User"),
+         ActorIp   = tostring(InitiatedBy.user.ipAddress)
+| summarize Operations          = count(),
+            DistinctOperations  = dcount(OperationName),
+            SampleOperations    = make_set(OperationName, 12),
+            Categories          = make_set(Category, 6),
+            IPs                 = make_set(ActorIp, 8),
+            WeekendOperations   = countif(IsWeekend),
+            NightOperations     = countif(IsAfterHours and not(IsWeekend)),
+            EarliestLocalHour   = min(LocalHour),
+            LatestLocalHour     = max(LocalHour),
+            FirstSeen           = min(TimeGenerated),
+            LastSeen            = max(TimeGenerated)
+        by Actor, ActorType
+| order by Operations desc

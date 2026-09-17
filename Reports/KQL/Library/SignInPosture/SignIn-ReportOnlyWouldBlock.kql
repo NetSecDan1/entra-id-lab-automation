@@ -1,0 +1,39 @@
+// =============================================================================
+// Name:       Report-only policies - who they would have blocked
+// Domain:     Sign-in posture
+// Tables:     SigninLogs
+// Severity:   high
+// Safety:     READ-ONLY.
+// Purpose:    The blast-radius query to run BEFORE flipping any Conditional Access policy from
+//             report-only to enabled. Every row is a sign-in that the policy would have
+//             interrupted or blocked had it been enforced.
+// Tuning:     lookback - use at least 7 days, ideally a full business cycle including a weekend
+//             and any month-end batch jobs, before trusting a zero result.
+// Reading it: WouldBeBlocked = 0 for a policy across a full cycle is your green light.
+//             Anything above zero: read AffectedUsers before enforcing. Break-glass accounts
+//             appearing here means the exclusion is wrong - fix that first.
+//             reportOnlyFailure     = grant controls not satisfied - user would be blocked.
+//             reportOnlyInterrupted = user would have been prompted (MFA/ToU) and did not
+//                                     complete it in this session.
+// Next step:  IAM/Get-CAPolicyHealthReport.ps1 flags report-only policies left unreviewed.
+// =============================================================================
+let lookback = 7d;
+SigninLogs
+| where TimeGenerated > ago(lookback)
+| mv-expand Policy = AppliedConditionalAccessPolicies
+| extend PolicyName   = tostring(Policy.displayName),
+         PolicyId     = tostring(Policy.id),
+         PolicyResult = tostring(Policy.result)
+| where PolicyResult in ("reportOnlyFailure", "reportOnlyInterrupted")
+| extend Country = tostring(LocationDetails.countryOrRegion)
+| summarize WouldBeBlocked = count(),
+            DistinctUsers  = dcount(UserPrincipalName),
+            AffectedUsers  = make_set(UserPrincipalName, 25),
+            Apps           = make_set(AppDisplayName, 10),
+            ClientApps     = make_set(ClientAppUsed, 8),
+            Countries      = make_set(Country, 8),
+            GuestImpact    = countif(UserType =~ "Guest"),
+            FirstSeen      = min(TimeGenerated),
+            LastSeen       = max(TimeGenerated)
+        by PolicyName, PolicyId, PolicyResult
+| order by WouldBeBlocked desc

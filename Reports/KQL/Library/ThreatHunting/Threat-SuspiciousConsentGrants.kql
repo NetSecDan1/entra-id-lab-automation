@@ -1,0 +1,61 @@
+// =============================================================================
+// Name:       Suspicious application consent and permission grants
+// Domain:     Threat hunting
+// Tables:     AuditLogs
+// Severity:   critical
+// Safety:     READ-ONLY.
+// Purpose:    Illicit consent grant is one of the most effective identity attacks against a
+//             cloud tenant: the attacker never needs the password again, because a consented
+//             app holds a long-lived token. This surfaces every consent and permission grant,
+//             flagging the ones carrying high-impact permissions.
+// Tuning:     lookback - window; use 90d for a hunt, 7d for monitoring. highRiskPermissions -
+//             edit to match what your org considers dangerous.
+// Reading it: IsHighRisk = true plus a user (not admin) actor is the classic illicit consent
+//             pattern. Look at TargetApp - an app you do not recognise consented by a handful
+//             of users within minutes of each other is a phishing campaign.
+//             full_access_as_app, Mail.ReadWrite, Directory.ReadWrite.All and
+//             RoleManagement.ReadWrite.Directory are effectively tenant takeover permissions.
+// Next step:  IAM/Get-AppConsentRiskReport.ps1 enumerates what is currently granted, live from
+//             Graph, including grants made before this window.
+// =============================================================================
+let lookback = 30d;
+let highRiskPermissions = dynamic([
+    "Directory.ReadWrite.All", "Directory.AccessAsUser.All", "RoleManagement.ReadWrite.Directory",
+    "AppRoleAssignment.ReadWrite.All", "Application.ReadWrite.All", "User.ReadWrite.All",
+    "Group.ReadWrite.All", "GroupMember.ReadWrite.All", "Mail.ReadWrite", "Mail.Send", "Mail.Read",
+    "Files.ReadWrite.All", "Sites.FullControl.All", "Sites.ReadWrite.All", "MailboxSettings.ReadWrite",
+    "PrivilegedAccess.ReadWrite.AzureAD", "Policy.ReadWrite.ConditionalAccess",
+    "full_access_as_app", "Exchange.ManageAsApp", "User.Read.All", "Chat.ReadWrite", "Notes.ReadWrite.All"
+]);
+AuditLogs
+| where TimeGenerated > ago(lookback)
+| where OperationName has_any ("Consent to application", "delegated permission grant",
+        "app role assignment", "OAuth2PermissionGrant", "Add service principal")
+| extend Actor     = coalesce(tostring(InitiatedBy.user.userPrincipalName), tostring(InitiatedBy.app.displayName)),
+         ActorType = iff(isnotempty(tostring(InitiatedBy.app.displayName)), "Application", "User"),
+         ActorIp   = tostring(InitiatedBy.user.ipAddress)
+| mv-expand Target = TargetResources
+| extend TargetApp = tostring(Target.displayName), TargetId = tostring(Target.id)
+| mv-expand Prop = Target.modifiedProperties
+| extend PropName = tostring(Prop.displayName),
+         NewValue = trim('"', tostring(Prop.newValue))
+| where PropName in ("ConsentAction.Permissions", "AppRole.Value", "AppRole.DisplayName",
+                     "DelegatedPermissionGrant.Scope", "ConsentContext.IsAdminConsent",
+                     "ConsentContext.OnBehalfOfAll", "ServicePrincipal.DisplayName")
+| summarize GrantedPermissions = make_set(NewValue, 25),
+            Properties         = make_set(PropName, 8),
+            Events             = count(),
+            FirstSeen          = min(TimeGenerated),
+            LastSeen           = max(TimeGenerated)
+        by OperationName, Actor, ActorType, ActorIp, TargetApp, TargetId, Result = tostring(ResultType)
+| extend PermissionText = tostring(GrantedPermissions)
+| extend IsHighRisk    = PermissionText has_any (highRiskPermissions),
+         IsAdminConsent = PermissionText has "True" and Properties has "ConsentContext.IsAdminConsent",
+         IsTenantWide   = PermissionText has "AllPrincipals" or Properties has "ConsentContext.OnBehalfOfAll"
+| extend Severity = case(IsHighRisk and IsTenantWide, "CRITICAL - tenant-wide high-impact consent",
+                         IsHighRisk,                  "High - high-impact permission granted",
+                                                      "Low - routine grant"),
+         SeverityRank = case(IsHighRisk and IsTenantWide, 0, IsHighRisk, 1, 2)
+| project LastSeen, Severity, SeverityRank, OperationName, Actor, ActorType, ActorIp,
+          TargetApp, TargetId, IsHighRisk, IsAdminConsent, IsTenantWide, GrantedPermissions, Events, Result, FirstSeen
+| order by SeverityRank asc, LastSeen desc

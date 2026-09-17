@@ -1,0 +1,32 @@
+// =============================================================================
+// Name:       Log ingestion latency
+// Domain:     Diagnostics
+// Tables:     SigninLogs, AuditLogs
+// Severity:   info
+// Safety:     READ-ONLY.
+// Purpose:    How far behind real time your logs are. Matters before you conclude
+//             "nothing happened in the last hour" - it may simply not have landed yet.
+//             Compares the event's own timestamp (CreatedDateTime / ActivityDateTime)
+//             against the ingestion timestamp (TimeGenerated).
+// Tuning:     lookback - window to profile. Bucketed hourly so you can see latency spikes.
+// Reading it: Entra ID sign-in export is typically P95 < 15 minutes and audit < 30 minutes.
+//             A P95 climbing over an hour, or a MaxSeconds near the ceiling, points at an
+//             export backlog on the Microsoft side or a workspace ingestion cap.
+// Caveat:     Rows where the two timestamps disagree by more than a day are dropped as clock
+//             noise / backfill rather than treated as real latency.
+// =============================================================================
+let lookback = 24h;
+union isfuzzy = true
+    (SigninLogs | where TimeGenerated > ago(lookback) | extend SourceTable = "SigninLogs", EventTime = todatetime(CreatedDateTime)),
+    (AuditLogs  | where TimeGenerated > ago(lookback) | extend SourceTable = "AuditLogs",  EventTime = todatetime(ActivityDateTime))
+| where isnotnull(EventTime)
+| extend LatencySeconds = datetime_diff('second', TimeGenerated, EventTime)
+| where LatencySeconds between (0 .. 86400)
+| summarize Events            = count(),
+            P50Seconds        = round(percentile(LatencySeconds, 50), 0),
+            P95Seconds        = round(percentile(LatencySeconds, 95), 0),
+            P99Seconds        = round(percentile(LatencySeconds, 99), 0),
+            MaxSeconds        = max(LatencySeconds)
+        by SourceTable, Hour = bin(TimeGenerated, 1h)
+| extend P95Minutes = round(P95Seconds / 60.0, 1)
+| order by Hour desc, SourceTable asc
