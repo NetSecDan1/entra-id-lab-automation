@@ -7,6 +7,11 @@ PowerShell scripts that query a Log Analytics workspace (Entra ID Sign-in/Audit 
 | `Get-RiskySignInsReport.ps1` | Medium/high risk sign-ins, cross-referenced against current privileged role membership |
 | `Get-LegacyAuthReport.ps1` | Legacy/basic auth usage that's still getting through — run before/after enabling a "block legacy auth" CA policy |
 | `Get-ConditionalAccessInsightsReport.ps1` | Per-policy success/failure/not-applied counts, and what report-only policies would have blocked |
+| `Get-PasswordSprayReport.ps1` | Invalid-credential failures shaped like a spray (1 IP, many users) or targeted brute force (many IPs, 1 user) |
+| `Get-ImpossibleTravelReport.ps1` | Same user, successful sign-ins from two countries closer together in time than travel allows |
+| `Get-AdminActivityReport.ps1` | Who changed what: role assignments, CA policy edits, app/group management, by actor and over time |
+| `Get-ServicePrincipalSignInReport.ps1` | App-only (daemon/service principal) sign-in volume, failures, and IP spread per app |
+| `Get-AuthMethodUsageReport.ps1` | Real-world MFA method mix — phishing-resistant vs. phishable (SMS/voice) vs. single-factor sign-ins |
 
 ## Setup
 

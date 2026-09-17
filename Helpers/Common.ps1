@@ -318,7 +318,7 @@ function Get-AllEmployeeUsers {
         [string[]]$ExcludeUpnPrefixes = @("breakglass","testadmin","admin.","svc-","testblocked")
     )
     $excluded = $ExcludeUpnPrefixes
-    $companyFilter = $CompanyName -replace "'", "''"   # OData: escape single quotes (e.g. "Fabrikam's Lab")
+    $companyFilter = $CompanyName -replace "'", "''"   # OData: escape single quotes (e.g. "O'Brien's Lab")
     # companyName filtering requires advanced query params (ConsistencyLevel eventual + $count).
     return Get-MgUser -All -ConsistencyLevel eventual -CountVariable employeeCount `
         -Filter "companyName eq '$companyFilter' and accountEnabled eq true" `
