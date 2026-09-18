@@ -205,6 +205,79 @@ function Test-GraphScope {
     }
 }
 
+# ---------------------------------------------------------------------------
+# Read-only audit trail.
+#
+# "It's read-only" is a claim. This makes it evidence: every Graph call this
+# module issues is recorded with its HTTP method, and the reports render that
+# log so a reviewer can confirm for themselves that nothing but GET was sent.
+#
+# The enforcement is structural rather than procedural - Invoke-GraphPagedRequest
+# has no $Method parameter to set, so GET is not a default that could be
+# overridden, it is the only thing the function can do. The log proves it after
+# the fact; Test-GraphCallLogIsReadOnly fails loudly if it ever stops being true.
+# ---------------------------------------------------------------------------
+$script:GraphCallLog = [System.Collections.Generic.List[object]]::new()
+
+function Reset-GraphCallLog {
+    $script:GraphCallLog = [System.Collections.Generic.List[object]]::new()
+}
+
+function Get-GraphCallLog {
+    return @($script:GraphCallLog)
+}
+
+function Write-GraphCallLogEntry {
+    param(
+        [Parameter(Mandatory)][string]$Method,
+        [Parameter(Mandatory)][string]$Uri,
+        [int]$Pages = 0,
+        [int]$Rows = 0,
+        [string]$Outcome = "Success"
+    )
+    # Strip query strings so the log groups sensibly and never captures a filter
+    # value that might contain a UPN.
+    $endpoint = ($Uri -split '\?')[0] -replace '^https://graph\.microsoft\.com/', ''
+    [void]$script:GraphCallLog.Add([pscustomobject]@{
+        Method   = $Method
+        Endpoint = $endpoint
+        Pages    = $Pages
+        Rows     = $Rows
+        Outcome  = $Outcome
+        At       = (Get-Date).ToString("HH:mm:ss")
+    })
+}
+
+<#
+.SYNOPSIS
+    Asserts that every recorded Graph call was a GET.
+
+.DESCRIPTION
+    Called by the reports before they render. If a non-GET ever appears in the
+    log the report throws rather than completing, because a read-only audit that
+    quietly wrote something is worse than no audit at all.
+#>
+function Test-GraphCallLogIsReadOnly {
+    [CmdletBinding()]
+    param([switch]$ThrowOnViolation)
+
+    $violations = @(Get-GraphCallLog | Where-Object { $_.Method -ne "GET" })
+
+    $result = [pscustomobject]@{
+        TotalCalls   = @(Get-GraphCallLog).Count
+        ReadCalls    = @(Get-GraphCallLog | Where-Object { $_.Method -eq "GET" }).Count
+        WriteCalls   = $violations.Count
+        IsReadOnly   = ($violations.Count -eq 0)
+        Violations   = $violations
+    }
+
+    if ($ThrowOnViolation -and -not $result.IsReadOnly) {
+        throw "READ-ONLY VIOLATION: $($violations.Count) non-GET Graph call(s) were issued: $(($violations | ForEach-Object { "$($_.Method) $($_.Endpoint)" }) -join '; '). This should be impossible - stop and investigate before trusting any output."
+    }
+
+    return $result
+}
+
 <#
 .SYNOPSIS
     GETs a Graph URL and follows paging, honouring throttling.
@@ -276,6 +349,7 @@ function Invoke-GraphPagedRequest {
 
                 if ($TolerateFailure) {
                     Write-Host "[!] Graph request failed and was tolerated: $Uri`n    $message" -ForegroundColor Yellow
+                    Write-GraphCallLogEntry -Method "GET" -Uri $Uri -Pages $page -Outcome "Failed (tolerated)"
                     return @()
                 }
                 throw "Graph GET failed: $Uri`n$message"
@@ -300,6 +374,9 @@ function Invoke-GraphPagedRequest {
 
     if ($next) {
         Write-Host "[!] Stopped after $MaxPages pages - results are TRUNCATED for $Uri" -ForegroundColor Yellow
+        Write-GraphCallLogEntry -Method "GET" -Uri $Uri -Pages $page -Rows $all.Count -Outcome "Truncated"
+    } else {
+        Write-GraphCallLogEntry -Method "GET" -Uri $Uri -Pages $page -Rows $all.Count
     }
 
     return $all.ToArray()

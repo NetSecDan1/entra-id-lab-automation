@@ -14,6 +14,8 @@ Graph-native identity/access reports — no Log Analytics workspace required (co
 | `Get-AppConsentRiskReport.ps1` | Every application permission and consent grant, risk-ranked by what it actually lets the holder do; ownerless privileged apps; apps independently consented to by multiple users | `Application.Read.All`, `Directory.Read.All` |
 | `Get-MfaRegistrationGapReport.ps1` | Who can't do MFA at all, who can only do SMS/voice, which admins aren't phishing-resistant | `AuditLog.Read.All` or `Reports.Read.All` (P1) |
 | `Get-GuestAccessReport.ps1` | Guest population and real exposure: guests holding directory roles, never-redeemed invites, dormant guests, consumer-domain guests, and the collaboration policy that let them in | `User.Read.All`, `Directory.Read.All`, `Policy.Read.All` |
+| `Get-AppRiskInventory.ps1` | **The one-off audit.** Complete client-side app inventory: every permission on every API, credentials including federated identity, ownership both directions, directory roles, optional real usage — scored and intersected | `Application.Read.All`, `Directory.Read.All`, `RoleManagement.Read.Directory` |
+| `Get-ServicePrincipalAzureRoleReport.ps1` | Azure RBAC assignments held by service principals — the second control plane no Entra permission audit covers | Azure `Reader` (not a Graph scope) |
 
 ```powershell
 .\IAM\Get-RiskyUsersReport.ps1 -Open
@@ -26,7 +28,46 @@ Graph-native identity/access reports — no Log Analytics workspace required (co
 .\IAM\Get-AppConsentRiskReport.ps1 -Open
 .\IAM\Get-MfaRegistrationGapReport.ps1 -Open
 .\IAM\Get-GuestAccessReport.ps1 -DormantDays 90 -Open
+
+# The complete one-off app audit. Preview what it reads before you run it.
+.\IAM\Get-AppRiskInventory.ps1 -PreviewCalls
+.\IAM\Get-AppRiskInventory.ps1 -WorkspaceId <guid> -ExportJson -Open
+
+# The other control plane
+.\IAM\Get-ServicePrincipalAzureRoleReport.ps1 -PreviewCalls
+.\IAM\Get-ServicePrincipalAzureRoleReport.ps1 -Open
 ```
+
+## Auditing risky applications
+
+Two reports, deliberately different in cost and completeness:
+
+| | `Get-AppConsentRiskReport.ps1` | `Get-AppRiskInventory.ps1` |
+|---|---|---|
+| Enumerates from | the **resource** side (`appRoleAssignedTo`) | the **client** side (`appRoleAssignments`) |
+| Graph calls | ~6, seconds | ~4 + one per service principal, minutes |
+| Sees permissions on | only the resource APIs you list | **every** API, including custom ones |
+| Use it for | routine checks, CI | the real audit |
+
+The difference matters. An app holding `DeviceManagementManagedDevices.ReadWrite.All` on Intune, or any permission on your own API, is invisible to resource-side enumeration unless you happened to list that API. Client-side enumeration cannot miss it.
+
+`Get-AppRiskInventory.ps1` computes the intersection that a permission list never does:
+
+> **high privilege × holds a long-lived credential × nobody owns it × nothing is using it**
+
+An app at that intersection is powerful, exploitable, unaccountable and unmissed. That is usually a very short list, and it is the work queue. Supply `-WorkspaceId` to populate the usage dimension from `AADServicePrincipalSignInLogs`; without it, dormancy is reported as **NotChecked**, never as zero dormant apps.
+
+Three things it finds that the consent report does not:
+
+- **Escalation permissions.** An app with `AppRoleAssignment.ReadWrite.All` has an effective permission set of *everything*, because it can grant itself the rest. Reviewing its other permissions individually is beside the point.
+- **Shadow admins.** An application owner can add a credential to their own app and then authenticate as it. Owning a privileged app is equivalent to holding its permissions — and those owners appear on no privileged-role report.
+- **Federated identity credentials.** An FIC has no secret and no expiry, so it never shows up in a credential-expiry report. Anything that can present a token from the trusted issuer and subject authenticates as that app.
+
+### The second control plane
+
+`Get-ServicePrincipalAzureRoleReport.ps1` covers Azure RBAC, which is an entirely separate authorisation system with its own API and its own portal. An app can hold zero Graph permissions and still be **Owner on a production subscription** — and every Entra-side report here, including `Get-AppRiskInventory.ps1`, will show it as harmless.
+
+Custom roles are scored from their actual `Actions` list rather than their name, because a custom role called "Readonly Audit" may well permit `Microsoft.Authorization/roleAssignments/write`. An identity appearing high-risk in *both* reports is genuinely dangerous: broad directory permissions and broad Azure control, usually with one non-expiring secret behind both.
 
 All reuse `Connect-TestTenant` from `Helpers/Common.ps1`, so they authenticate the same way the rest of this repo does. `Get-ConditionalAccessGapReport.ps1` resolves group membership one level deep only — see its docstring for that limitation before treating a reported gap as absolute. `Get-CAPolicyHealthReport.ps1` and `Get-ConditionalAccessGapReport.ps1` answer different questions — the first audits the policy set's coverage in the abstract, the second resolves real membership to see who's actually protected.
 
@@ -58,3 +99,21 @@ A check that could not run is reported as `NotChecked` with the reason, and its 
 | What happened, and when? | [`Reports/KQL/Library`](../Reports/KQL/Library) — these read state, those read events |
 
 The Graph reports and the KQL library are complementary, not redundant. Graph shows the **resulting state**, including changes made long before your log retention begins. KQL shows the **events**, including who made a change and from where. A consent grant made two years ago is invisible to the KQL query and obvious to `Get-AppConsentRiskReport`; who granted it and from which IP is the reverse.
+
+## Proving it is read-only
+
+`Tests/Test-ReadOnlySafety.ps1` verifies the claim rather than restating it. It connects to nothing and needs no credentials:
+
+```powershell
+.\Tests\Test-ReadOnlySafety.ps1
+```
+
+It checks that no mutating Graph or Az cmdlet appears in `IAM/` or `Reports/`, that no `*.ReadWrite.*` scope is requested at connect time, that no KQL control command exists in the query library, that `Invoke-GraphPagedRequest` exposes no parameter capable of changing the HTTP method — and that the runtime assertion actually fires when a non-GET is planted, so the safety net is not itself inert.
+
+Three layers back the read-only guarantee:
+
+1. **Structural.** `Invoke-GraphPagedRequest` has no method parameter. GET is not a default that could be overridden; it is the only verb the function can issue.
+2. **Runtime.** Every call is recorded. Before a report renders, `Test-GraphCallLogIsReadOnly` asserts nothing but GET was sent and throws if that is ever untrue.
+3. **Evidence.** The call log is rendered into the report, so a reviewer can confirm it rather than take your word for it.
+
+`-PreviewCalls` on both app reports prints the exact call plan and exits without connecting — run it first against a tenant you do not own.

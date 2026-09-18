@@ -79,6 +79,7 @@ $ErrorActionPreference = "Stop"
 
 . "$PSScriptRoot\..\Helpers\Common.ps1"
 . "$PSScriptRoot\..\Reports\Helpers\GraphReadOnly.ps1"
+. "$PSScriptRoot\..\Reports\Helpers\AppPermissionCatalog.ps1"
 . "$PSScriptRoot\..\Reports\Helpers\HtmlReportFramework.ps1"
 
 $config = Get-Config -ConfigPath $ConfigPath
@@ -90,61 +91,11 @@ $preflight = Test-GraphScope -Required @("Application.Read.All", "Directory.Read
 if (-not $preflight.AllPresent) { Write-Status $preflight.Summary -Type Warning }
 
 # ---------------------------------------------------------------------------
-# Permission risk catalog.
-#
-# Tiered by what the permission actually lets the holder do, not by how the
-# portal labels it. "Critical" means holding it is equivalent to, or a short
-# step from, tenant takeover.
+# Permission risk catalog now lives in Reports/Helpers/AppPermissionCatalog.ps1,
+# shared with IAM/Get-AppRiskInventory.ps1 so the two reports cannot drift on
+# what counts as risky. Get-PermissionRisk and Test-IsEscalationPermission come
+# from there.
 # ---------------------------------------------------------------------------
-$permissionRisk = @{
-    # Tenant takeover or a direct path to it
-    "RoleManagement.ReadWrite.Directory" = @{ Tier = "Critical"; Why = "Can grant itself or anyone else Global Administrator" }
-    "AppRoleAssignment.ReadWrite.All"    = @{ Tier = "Critical"; Why = "Can grant itself any other application permission - privilege escalation to anything" }
-    "Application.ReadWrite.All"          = @{ Tier = "Critical"; Why = "Can add credentials to any app, including highly privileged ones" }
-    "Directory.ReadWrite.All"            = @{ Tier = "Critical"; Why = "Full read/write over directory objects" }
-    "PrivilegedAccess.ReadWrite.AzureAD" = @{ Tier = "Critical"; Why = "Can manipulate PIM role eligibility and activation" }
-    "Policy.ReadWrite.ConditionalAccess" = @{ Tier = "Critical"; Why = "Can disable or weaken the Conditional Access policies protecting everyone" }
-    "full_access_as_app"                 = @{ Tier = "Critical"; Why = "Full access to every mailbox in the tenant (Exchange)" }
-    "Sites.FullControl.All"              = @{ Tier = "Critical"; Why = "Full control of every SharePoint site and OneDrive" }
-    "Domain.ReadWrite.All"               = @{ Tier = "Critical"; Why = "Can add a federated domain - a known tenant-takeover path" }
-    "PrivilegedAuthentication.ReadWrite.All" = @{ Tier = "Critical"; Why = "Can reset credentials for privileged accounts" }
-
-    # Mass data access
-    "Mail.ReadWrite"                     = @{ Tier = "High"; Why = "As an application permission: read and modify every mailbox" }
-    "Mail.Read"                          = @{ Tier = "High"; Why = "As an application permission: read every mailbox" }
-    "Mail.Send"                          = @{ Tier = "High"; Why = "Send mail as any user - phishing from inside your own domain" }
-    "MailboxSettings.ReadWrite"          = @{ Tier = "High"; Why = "Can set inbox forwarding rules - classic exfiltration persistence" }
-    "Files.ReadWrite.All"                = @{ Tier = "High"; Why = "Read and modify all files across OneDrive and SharePoint" }
-    "Files.Read.All"                     = @{ Tier = "High"; Why = "Read all files across OneDrive and SharePoint" }
-    "Sites.ReadWrite.All"                = @{ Tier = "High"; Why = "Read and modify all SharePoint content" }
-    "User.ReadWrite.All"                 = @{ Tier = "High"; Why = "Modify any user, including attributes used by dynamic groups and CA policies" }
-    "Group.ReadWrite.All"                = @{ Tier = "High"; Why = "Modify any group, including groups that grant access or role assignment" }
-    "GroupMember.ReadWrite.All"          = @{ Tier = "High"; Why = "Add itself or anyone to any group, including privileged ones" }
-    "Directory.AccessAsUser.All"         = @{ Tier = "High"; Why = "Acts with the signed-in user's full directory permissions" }
-    "Exchange.ManageAsApp"               = @{ Tier = "High"; Why = "Run Exchange management operations as an application" }
-    "Chat.ReadWrite"                     = @{ Tier = "High"; Why = "Read and send Teams chat on behalf of users" }
-    "Notes.ReadWrite.All"                = @{ Tier = "High"; Why = "Read and modify all OneNote content" }
-    "Calendars.ReadWrite"                = @{ Tier = "High"; Why = "Read and modify all calendars" }
-
-    # Broad read of the directory - reconnaissance value
-    "User.Read.All"                      = @{ Tier = "Medium"; Why = "Full user directory read - reconnaissance for targeting" }
-    "Group.Read.All"                     = @{ Tier = "Medium"; Why = "Full group read, including membership" }
-    "Directory.Read.All"                 = @{ Tier = "Medium"; Why = "Broad directory read" }
-    "AuditLog.Read.All"                  = @{ Tier = "Medium"; Why = "Read sign-in and audit logs - reveals defender activity" }
-    "Policy.Read.All"                    = @{ Tier = "Medium"; Why = "Read security policy configuration, including CA policy detail" }
-    "Application.Read.All"               = @{ Tier = "Medium"; Why = "Enumerate all applications and their permissions" }
-}
-
-function Get-PermissionRisk {
-    param([string]$Permission)
-    $key = ($Permission -replace '^.*/', '').Trim()
-    if ($permissionRisk.ContainsKey($key)) {
-        return [pscustomobject]@{ Tier = $permissionRisk[$key].Tier; Why = $permissionRisk[$key].Why }
-    }
-    # Unknown *.ReadWrite.* is still worth flagging above an unknown read.
-    if ($key -match '\.ReadWrite\.') { return [pscustomobject]@{ Tier = "Medium"; Why = "Write permission not in the risk catalog - review manually" } }
-    return [pscustomobject]@{ Tier = "Low"; Why = "" }
-}
 
 # ---------------------------------------------------------------------------
 # 1. Service principal inventory

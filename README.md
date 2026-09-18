@@ -43,7 +43,7 @@ Five things layered on top of the core tenant-builder:
 | **[IaC](IaC/terraform)** | Terraform for the Azure-side monitoring backbone: a Log Analytics workspace + tenant-level Entra ID diagnostic export, plus an optional demo of Conditional-Access-as-code via the `azuread` provider. |
 | **[KQL reports](Reports/KQL)** | Nine PowerShell scripts that query the Log Analytics workspace above with KQL and render the results as a single, self-contained, sortable/searchable HTML dashboard. The renderer (`Reports/Helpers/HtmlReportFramework.ps1`) has zero dependencies, so it's designed to be copy-pasted into any future one-off script too. |
 | **[KQL query library](Reports/KQL/Library)** | 36 standalone, documented `.kql` files — password spray, targeted brute force, geodesic impossible travel, MFA fatigue, illicit consent, app credential backdoors, CA policy effectiveness, dormant apps and users, workload identity failures, and the ingestion diagnostics that tell you whether any of it can be trusted. Every file is read-only and pasteable straight into Log Analytics, Sentinel or Defender XDR; `Invoke-KqlLibraryQuery.ps1` lists, parameterizes and renders them without forking the files. |
-| **[IAM automations](IAM)** | Ten Graph-native reports needing no Log Analytics workspace: risky users, stale accounts, app credential expiry, real CA coverage-gap analysis, CA policy health, privileged role usage, PIM activation history, plus application consent risk, MFA registration gaps, and guest access exposure. |
+| **[IAM automations](IAM)** | Twelve read-only reports: risky users, stale accounts, app credential expiry, real CA coverage-gap analysis, CA policy health, privileged role usage, PIM activation history, application consent risk, MFA registration gaps, guest access exposure, a complete application risk inventory, and service principal Azure RBAC assignments. |
 
 ## Design principles
 
@@ -72,6 +72,19 @@ Already have a tenant and a workspace? The reporting side stands alone — it re
 .\IAM\Get-AppConsentRiskReport.ps1 -Open
 .\IAM\Get-MfaRegistrationGapReport.ps1 -Open
 .\IAM\Get-GuestAccessReport.ps1 -Open
+
+# 5. The complete one-off application audit. See what it reads first.
+.\IAM\Get-AppRiskInventory.ps1 -PreviewCalls
+.\IAM\Get-AppRiskInventory.ps1 -Open
+
+# 6. The other control plane: Azure RBAC held by service principals.
+.\IAM\Get-ServicePrincipalAzureRoleReport.ps1 -Open
+```
+
+Verify the read-only claim before any of it — connects to nothing, needs no credentials:
+
+```powershell
+.\Tests\Test-ReadOnlySafety.ps1
 ```
 
 ## Prerequisites
@@ -155,8 +168,10 @@ Reports/KQL/Invoke-KqlLibraryQuery.ps1
 Reports/Helpers/HtmlReportFramework.ps1   # The renderer (zero dependencies)
 Reports/Helpers/KqlQuery.ps1              # Azure connect + query execution with retry
 Reports/Helpers/KqlLibrary.ps1            # Library index / load / parameterize
-Reports/Helpers/GraphReadOnly.ps1         # Read-only Graph + scope preflight + findings
-IAM/                              # Ten Graph-native reports
+Reports/Helpers/GraphReadOnly.ps1         # Read-only Graph + scope preflight + call audit trail
+Reports/Helpers/AppPermissionCatalog.ps1  # Shared permission risk catalog
+IAM/                              # Twelve read-only reports
+Tests/Test-ReadOnlySafety.ps1     # Verifies the read-only guarantee
 ```
 
 ## Disclaimer
